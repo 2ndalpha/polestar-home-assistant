@@ -34,9 +34,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class PolestarChargeLimitNumber(
-    CoordinatorEntity[PolestarCoordinator], NumberEntity
-):
+class PolestarChargeLimitNumber(CoordinatorEntity[PolestarCoordinator], NumberEntity):
     """Charge limit number entity — sets the target SOC percentage."""
 
     _attr_has_entity_name = True

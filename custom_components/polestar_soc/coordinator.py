@@ -10,7 +10,6 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 import requests
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -51,9 +50,7 @@ class PolestarAPI:
     def login(self, email: str, password: str) -> dict:
         """Perform full OAuth2 Authorization Code + PKCE login."""
         code_verifier = _b64urlencode(os.urandom(32))
-        code_challenge = _b64urlencode(
-            hashlib.sha256(code_verifier.encode()).digest()
-        )
+        code_challenge = _b64urlencode(hashlib.sha256(code_verifier.encode()).digest())
         state = _b64urlencode(os.urandom(12))
 
         session = requests.Session()
@@ -76,9 +73,7 @@ class PolestarAPI:
         resp.raise_for_status()
 
         # Step 2: Extract resume path
-        match = re.search(
-            r'(/as/[^/]+/resume/as/authorization\.ping)', resp.text
-        )
+        match = re.search(r"(/as/[^/]+/resume/as/authorization\.ping)", resp.text)
         if not match:
             raise UpdateFailed("Could not find login form endpoint")
 
@@ -99,9 +94,7 @@ class PolestarAPI:
         if resp.status_code not in (302, 303):
             if "ERR001" in resp.text or "authMessage" in resp.text:
                 raise ConfigEntryAuthFailed("Invalid email or password")
-            raise UpdateFailed(
-                f"Unexpected login response ({resp.status_code})"
-            )
+            raise UpdateFailed(f"Unexpected login response ({resp.status_code})")
 
         redirect_url = resp.headers.get("Location", "")
         parsed = urlparse(redirect_url)
@@ -124,9 +117,7 @@ class PolestarAPI:
             params = parse_qs(parsed.query)
 
         if "code" not in params:
-            resp = session.get(
-                redirect_url, allow_redirects=False, timeout=HTTP_TIMEOUT
-            )
+            resp = session.get(redirect_url, allow_redirects=False, timeout=HTTP_TIMEOUT)
             if resp.status_code in (302, 303):
                 redirect_url = resp.headers.get("Location", "")
                 parsed = urlparse(redirect_url)
@@ -191,9 +182,7 @@ class PolestarAPI:
         if variables:
             payload["variables"] = variables
 
-        resp = requests.post(
-            API_URL, json=payload, headers=headers, timeout=HTTP_TIMEOUT
-        )
+        resp = requests.post(API_URL, json=payload, headers=headers, timeout=HTTP_TIMEOUT)
         resp.raise_for_status()
         result = resp.json()
 
@@ -268,9 +257,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
 
         # Full re-login
         try:
-            await self.hass.async_add_executor_job(
-                self.api.login, self._email, self._password
-            )
+            await self.hass.async_add_executor_job(self.api.login, self._email, self._password)
             self._update_stored_tokens()
         except ConfigEntryAuthFailed:
             raise
