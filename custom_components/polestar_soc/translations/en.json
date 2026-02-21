@@ -1,0 +1,60 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Polestar Account",
+        "description": "Enter your Polestar ID credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Polestar Account",
+        "description": "Your session has expired. Please re-enter your credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password.",
+      "cannot_connect": "Could not connect to Polestar API.",
+      "no_vehicles": "No vehicles found on this account."
+    },
+    "abort": {
+      "already_configured": "This account is already configured.",
+      "reauth_successful": "Re-authentication successful."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery_soc": {
+        "name": "Battery SOC"
+      },
+      "charging_status": {
+        "name": "Charging status"
+      },
+      "charging_time_remaining": {
+        "name": "Charging time remaining"
+      },
+      "odometer": {
+        "name": "Odometer"
+      }
+    },
+    "number": {
+      "charge_limit": {
+        "name": "Charge limit"
+      }
+    },
+    "time": {
+      "charging_start_time": {
+        "name": "Charging start time"
+      },
+      "charging_end_time": {
+        "name": "Charging end time"
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "domain": "polestar_soc",
+  "name": "Polestar State of Charge",
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "",
+  "iot_class": "cloud_polling",
+  "requirements": ["requests>=2.28.0", "grpcio>=1.60.0", "protobuf>=4.25.0"],
+  "version": "1.0.0"
+}
