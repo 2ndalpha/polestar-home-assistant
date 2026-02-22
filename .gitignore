@@ -5,3 +5,8 @@ dist/
 build/
 .env
 *.log
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.venv/

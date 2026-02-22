@@ -33,6 +33,7 @@ _METHOD_SET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/SetGlobalChargeTimer"
 # ---------------------------------------------------------------------------
 # Wire types: 0=varint, 2=length-delimited
 
+
 def _encode_varint(value: int) -> bytes:
     """Encode an integer as a protobuf varint."""
     pieces = []
@@ -241,6 +242,7 @@ def _parse_charge_timer_response(data: bytes) -> dict:
 # Raw serializer/deserializer for grpc channel methods
 # ---------------------------------------------------------------------------
 
+
 def _identity_serialize(data: bytes) -> bytes:
     return data
 
@@ -274,9 +276,7 @@ class PccsClient:
         """Get or create the gRPC channel."""
         if self._channel is None:
             credentials = grpc.ssl_channel_credentials()
-            self._channel = grpc.secure_channel(
-                f"{PCCS_API_HOST}:443", credentials
-            )
+            self._channel = grpc.secure_channel(f"{PCCS_API_HOST}:443", credentials)
         return self._channel
 
     def _metadata(self, vin: str) -> list[tuple[str, str]]:
@@ -364,9 +364,7 @@ class PccsClient:
             request_serializer=_identity_serialize,
             response_deserializer=_identity_deserialize,
         )
-        request = _build_set_charge_timer_request(
-            start_hour, start_min, end_hour, end_min
-        )
+        request = _build_set_charge_timer_request(start_hour, start_min, end_hour, end_min)
         try:
             response = method(request, metadata=self._metadata(vin), timeout=30)
             return _parse_charge_timer_response(response)

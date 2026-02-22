@@ -29,22 +29,16 @@ class PolestarSensorDescription(SensorEntityDescription):
     value_fn: Callable[[dict, dict | None, dict | None], object]
 
 
-def _battery_soc(
-    vehicle: dict, battery: dict | None, odometer: dict | None
-) -> int | None:
+def _battery_soc(vehicle: dict, battery: dict | None, odometer: dict | None) -> int | None:
     if battery is None:
         return None
     return battery.get("batteryChargeLevelPercentage")
 
 
-def _charging_status(
-    vehicle: dict, battery: dict | None, odometer: dict | None
-) -> str:
+def _charging_status(vehicle: dict, battery: dict | None, odometer: dict | None) -> str:
     if battery is None:
         return "Unknown"
-    return PolestarCoordinator.format_charging_status(
-        battery.get("chargingStatus")
-    )
+    return PolestarCoordinator.format_charging_status(battery.get("chargingStatus"))
 
 
 def _charging_time_remaining(
@@ -55,9 +49,7 @@ def _charging_time_remaining(
     return battery.get("estimatedChargingTimeToFullMinutes")
 
 
-def _odometer_km(
-    vehicle: dict, battery: dict | None, odometer: dict | None
-) -> float | None:
+def _odometer_km(vehicle: dict, battery: dict | None, odometer: dict | None) -> float | None:
     if odometer is None:
         return None
     meters = odometer.get("odometerMeters")
@@ -111,9 +103,7 @@ async def async_setup_entry(
     for vehicle in coordinator.data.get("vehicles", []):
         vin = vehicle["vin"]
         for description in SENSOR_DESCRIPTIONS:
-            entities.append(
-                PolestarSensor(coordinator, description, vehicle, vin)
-            )
+            entities.append(PolestarSensor(coordinator, description, vehicle, vin))
 
     async_add_entities(entities)
 

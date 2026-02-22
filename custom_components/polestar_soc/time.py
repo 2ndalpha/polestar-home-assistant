@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import time
 import logging
+from datetime import time
 
 from homeassistant.components.time import TimeEntity
 from homeassistant.config_entries import ConfigEntry
@@ -29,23 +29,13 @@ async def async_setup_entry(
     entities: list[PolestarChargeTimeEntity] = []
     for vehicle in coordinator.data.get("vehicles", []):
         vin = vehicle["vin"]
-        entities.append(
-            PolestarChargeTimeEntity(
-                coordinator, vehicle, vin, time_key="start"
-            )
-        )
-        entities.append(
-            PolestarChargeTimeEntity(
-                coordinator, vehicle, vin, time_key="end"
-            )
-        )
+        entities.append(PolestarChargeTimeEntity(coordinator, vehicle, vin, time_key="start"))
+        entities.append(PolestarChargeTimeEntity(coordinator, vehicle, vin, time_key="end"))
 
     async_add_entities(entities)
 
 
-class PolestarChargeTimeEntity(
-    CoordinatorEntity[PolestarCoordinator], TimeEntity
-):
+class PolestarChargeTimeEntity(CoordinatorEntity[PolestarCoordinator], TimeEntity):
     """Charge timer time entity — sets charging start or end time."""
 
     _attr_has_entity_name = True
@@ -110,9 +100,7 @@ class PolestarChargeTimeEntity(
         Both start and end times are sent together in a single gRPC call,
         so we read the current opposite value from coordinator data.
         """
-        timer_data = (
-            self.coordinator.data.get("charge_timer", {}).get(self._vin) or {}
-        )
+        timer_data = self.coordinator.data.get("charge_timer", {}).get(self._vin) or {}
 
         if self._time_key == "start":
             start_h, start_m = value.hour, value.minute
