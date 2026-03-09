@@ -24,6 +24,10 @@ from .const import (
     OIDC_AUTH_URL,
     OIDC_BASE_URL,
     OIDC_TOKEN_URL,
+    PCCS_ACR_VALUES,
+    PCCS_CLIENT_ID,
+    PCCS_REDIRECT_URI,
+    PCCS_SCOPE,
     QUERY_GET_CARS,
     QUERY_TELEMATICS,
     REDIRECT_URI,
@@ -44,12 +48,30 @@ def _b64urlencode(data: bytes) -> str:
 class PolestarAPI:
     """Handle Polestar OAuth2 PKCE authentication and GraphQL queries."""
 
-    def __init__(self) -> None:
+    def __init__(self, otp_callback: callable | None = None) -> None:
         self.access_token: str | None = None
         self.refresh_token: str | None = None
+        self._otp_callback = otp_callback
 
-    def login(self, email: str, password: str) -> dict:
+    def _get_otp_code(self) -> str | None:
+        """Get OTP code for 2FA via callback."""
+        if self._otp_callback:
+            return self._otp_callback()
+        return None
+
+    def login(
+        self,
+        email: str,
+        password: str,
+        client_id: str = CLIENT_ID,
+        redirect_uri: str = REDIRECT_URI,
+        scope: str = SCOPE,
+        acr_values: str | None = None,
+    ) -> dict:
         """Perform full OAuth2 Authorization Code + PKCE login."""
+        self._client_id = client_id
+        self._redirect_uri = redirect_uri
+
         code_verifier = _b64urlencode(os.urandom(32))
         code_challenge = _b64urlencode(hashlib.sha256(code_verifier.encode()).digest())
         state = _b64urlencode(os.urandom(12))
@@ -57,17 +79,20 @@ class PolestarAPI:
         session = requests.Session()
 
         # Step 1: Authorization request
+        auth_params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "state": state,
+            "scope": scope,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        }
+        if acr_values:
+            auth_params["acr_values"] = acr_values
         resp = session.get(
             OIDC_AUTH_URL,
-            params={
-                "client_id": CLIENT_ID,
-                "redirect_uri": REDIRECT_URI,
-                "response_type": "code",
-                "state": state,
-                "scope": SCOPE,
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
-            },
+            params=auth_params,
             allow_redirects=True,
             timeout=HTTP_TIMEOUT,
         )
@@ -86,7 +111,7 @@ class PolestarAPI:
             data={
                 "pf.username": email,
                 "pf.pass": password,
-                "client_id": CLIENT_ID,
+                "client_id": client_id,
             },
             allow_redirects=False,
             timeout=HTTP_TIMEOUT,
@@ -95,7 +120,55 @@ class PolestarAPI:
         if resp.status_code not in (302, 303):
             if "ERR001" in resp.text or "authMessage" in resp.text:
                 raise ConfigEntryAuthFailed("Invalid email or password")
-            raise UpdateFailed(f"Unexpected login response ({resp.status_code})")
+
+            # 2SV: server returned OTP challenge page (200 with form)
+            if resp.status_code == 200:
+                # Extract action URL from JS globalContext
+                action_match = re.search(
+                    r'action:\s*"(/as/[^"]+/resume/as/authorization\.ping)"',
+                    resp.text,
+                )
+                otp_resume = (
+                    OIDC_BASE_URL + action_match.group(1)
+                    if action_match
+                    else resume_url
+                )
+
+                otp_code = self._get_otp_code()
+                if not otp_code:
+                    raise UpdateFailed("2FA code required but not provided")
+
+                _LOGGER.debug("Submitting OTP to %s", otp_resume)
+                resp = session.post(
+                    otp_resume,
+                    data={"otp": otp_code},
+                    allow_redirects=False,
+                    timeout=HTTP_TIMEOUT,
+                )
+                # OTP success returns a page with auto-submit form
+                if "otp-success-form" in resp.text:
+                    action_match2 = re.search(
+                        r'action="(/as/[^"]+/resume/as/authorization\.ping)"',
+                        resp.text,
+                    )
+                    continue_url = (
+                        OIDC_BASE_URL + action_match2.group(1)
+                        if action_match2
+                        else otp_resume
+                    )
+                    resp = session.post(
+                        continue_url,
+                        data={"continue.authentication": "true"},
+                        allow_redirects=False,
+                        timeout=HTTP_TIMEOUT,
+                    )
+
+                if resp.status_code not in (302, 303):
+                    raise UpdateFailed(
+                        f"2FA verification failed ({resp.status_code})"
+                    )
+            else:
+                raise UpdateFailed(f"Unexpected login response ({resp.status_code})")
 
         redirect_url = resp.headers.get("Location", "")
         parsed = urlparse(redirect_url)
@@ -136,8 +209,8 @@ class PolestarAPI:
                 "grant_type": "authorization_code",
                 "code": auth_code,
                 "code_verifier": code_verifier,
-                "client_id": CLIENT_ID,
-                "redirect_uri": REDIRECT_URI,
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
             },
             headers={"Accept": "application/json"},
             timeout=HTTP_TIMEOUT,
@@ -154,12 +227,13 @@ class PolestarAPI:
 
     def refresh_tokens(self, refresh_token: str) -> dict:
         """Refresh the access token using a refresh token."""
+        client_id = getattr(self, "_client_id", CLIENT_ID)
         resp = requests.post(
             OIDC_TOKEN_URL,
             data={
                 "grant_type": "refresh_token",
                 "refresh_token": refresh_token,
-                "client_id": CLIENT_ID,
+                "client_id": client_id,
             },
             headers={"Accept": "application/json"},
             timeout=HTTP_TIMEOUT,
@@ -221,7 +295,13 @@ class PolestarCoordinator(DataUpdateCoordinator):
         self.api = PolestarAPI()
         self.api.access_token = entry.data.get("access_token")
         self.api.refresh_token = entry.data.get("refresh_token")
-        self.pccs = PccsClient(self.api.access_token or "")
+
+        # Separate API instance for PCCS (needs iOS client_id)
+        self._pccs_api = PolestarAPI()
+        self._pccs_api.access_token = entry.data.get("pccs_access_token")
+        self._pccs_api.refresh_token = entry.data.get("pccs_refresh_token")
+
+        self.pccs = PccsClient(self._pccs_api.access_token or "")
         self.cep = CepClient(self.api.access_token or "")
         self._email: str = entry.data["email"]
         self._password: str = entry.data["password"]
@@ -246,21 +326,40 @@ class PolestarCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"API error after re-auth: {err}") from err
 
     async def _refresh_or_relogin(self) -> None:
-        """Try token refresh, fall back to full re-login."""
-        if self.api.refresh_token:
+        """Try token refresh, fall back to full re-login for both API clients."""
+        # Refresh/relogin the main (web) API
+        await self._refresh_or_relogin_api(self.api, CLIENT_ID, REDIRECT_URI, SCOPE)
+        # Refresh/relogin the PCCS (mobile) API
+        await self._refresh_or_relogin_api(
+            self._pccs_api, PCCS_CLIENT_ID, PCCS_REDIRECT_URI, PCCS_SCOPE,
+            acr_values=PCCS_ACR_VALUES,
+        )
+        self._update_stored_tokens()
+
+    async def _refresh_or_relogin_api(
+        self,
+        api: PolestarAPI,
+        client_id: str,
+        redirect_uri: str,
+        scope: str,
+        acr_values: str | None = None,
+    ) -> None:
+        """Try token refresh, fall back to full re-login for a single API client."""
+        if api.refresh_token:
             try:
                 await self.hass.async_add_executor_job(
-                    self.api.refresh_tokens, self.api.refresh_token
+                    api.refresh_tokens, api.refresh_token
                 )
-                self._update_stored_tokens()
                 return
             except Exception:
-                _LOGGER.debug("Refresh token failed, doing full re-login")
+                _LOGGER.debug("Refresh token failed for %s, doing full re-login", client_id)
 
         # Full re-login
         try:
-            await self.hass.async_add_executor_job(self.api.login, self._email, self._password)
-            self._update_stored_tokens()
+            await self.hass.async_add_executor_job(
+                api.login, self._email, self._password,
+                client_id, redirect_uri, scope, acr_values,
+            )
         except ConfigEntryAuthFailed:
             raise
         except Exception as err:
@@ -343,10 +442,12 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 **self.config_entry.data,
                 "access_token": self.api.access_token,
                 "refresh_token": self.api.refresh_token,
+                "pccs_access_token": self._pccs_api.access_token,
+                "pccs_refresh_token": self._pccs_api.refresh_token,
             },
         )
         # Keep gRPC client tokens in sync
-        self.pccs.access_token = self.api.access_token or ""
+        self.pccs.access_token = self._pccs_api.access_token or ""
         self.cep.access_token = self.api.access_token or ""
 
     def close(self) -> None:

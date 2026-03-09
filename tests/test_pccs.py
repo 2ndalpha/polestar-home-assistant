@@ -3,6 +3,10 @@
 import pytest
 
 from custom_components.polestar_soc.pccs import (
+    _METHOD_GET_CHARGE_TIMER,
+    _METHOD_GET_TARGET_SOC,
+    _METHOD_SET_CHARGE_TIMER,
+    _METHOD_SET_TARGET_SOC,
     _build_set_charge_timer_request,
     _build_set_target_soc_request,
     _build_time_of_day,
@@ -19,6 +23,25 @@ from custom_components.polestar_soc.proto import (
     _get_int,
     _get_submessage,
 )
+
+# ---------------------------------------------------------------------------
+# Service path constants — must include the pccs. package prefix
+# ---------------------------------------------------------------------------
+
+
+class TestServicePaths:
+    def test_target_soc_get_path(self):
+        assert _METHOD_GET_TARGET_SOC == "/pccs.chronos.services.v1.TargetSocService/GetTargetSoc"
+
+    def test_target_soc_set_path(self):
+        assert _METHOD_SET_TARGET_SOC == "/pccs.chronos.services.v1.TargetSocService/SetTargetSoc"
+
+    def test_charge_timer_get_path(self):
+        assert _METHOD_GET_CHARGE_TIMER == "/pccs.chronos.services.v2.GlobalChargeTimerService/GetGlobalChargeTimerStream"
+
+    def test_charge_timer_set_path(self):
+        assert _METHOD_SET_CHARGE_TIMER == "/pccs.chronos.services.v2.GlobalChargeTimerService/SetGlobalChargeTimer"
+
 
 # ---------------------------------------------------------------------------
 # Varint encoding / decoding
@@ -187,9 +210,12 @@ class TestGetSubmessage:
 
 class TestBuildSetTargetSocRequest:
     def test_roundtrip(self):
-        data = _build_set_target_soc_request(80)
+        data = _build_set_target_soc_request("TESTVIN123", 80)
         fields = _decode_message(data)
-        assert fields[1] == [80]
+        # Field 1 is the ChronosRequest sub-message
+        assert 1 in fields
+        # Field 2 is the target SOC value
+        assert fields[2] == [80]
 
 
 class TestBuildTimeOfDay:
@@ -215,11 +241,12 @@ class TestBuildTimeOfDay:
 
 class TestBuildSetChargeTimerRequest:
     def test_has_start_and_end(self):
-        data = _build_set_charge_timer_request(22, 0, 6, 30)
+        data = _build_set_charge_timer_request("TESTVIN123", 22, 0, 6, 30)
         fields = _decode_message(data)
-        # Fields 1 and 2 should be length-delimited sub-messages
+        # Field 1 is ChronosRequest, 2 is start time, 3 is end time
         assert 1 in fields
         assert 2 in fields
+        assert 3 in fields
 
 
 # ---------------------------------------------------------------------------
@@ -231,26 +258,25 @@ class TestParseTargetSocResponse:
     def test_empty_data(self):
         result = _parse_target_soc_response(b"")
         assert result["target_soc"] is None
-        assert result["enabled_values"] == []
+        assert result["setting_type"] == 0
 
     def test_basic_response(self):
-        # Encode: field 1 = 80 (target_soc)
-        data = _encode_field_varint(1, 80)
+        # Build a response with TargetSoc sub-message in field 3
+        # TargetSoc: field 1 = 80 (batteryChargeTargetLevel), field 2 = 3 (CUSTOM)
+        inner = _encode_field_varint(1, 80) + _encode_field_varint(2, 3)
+        data = _encode_field_bytes(3, inner)
         result = _parse_target_soc_response(data)
         assert result["target_soc"] == 80
+        assert result["setting_type"] == 3
 
-    def test_with_packed_enabled_values(self):
-        # Build a response with target_soc=80 and packed enabled_values
-        target = _encode_field_varint(1, 80)
-        # Pack values 50, 60, 70, 80, 90, 100 as length-delimited repeated varint
-        packed = b""
-        for v in [50, 60, 70, 80, 90, 100]:
-            packed += _encode_varint(v)
-        enabled = _encode_field_bytes(2, packed)
-        data = target + enabled
+    def test_with_pending(self):
+        # Build response with both current and pending target SOC
+        inner = _encode_field_varint(1, 80) + _encode_field_varint(2, 3)
+        pending = _encode_field_varint(1, 90)
+        data = _encode_field_bytes(3, inner) + _encode_field_bytes(4, pending)
         result = _parse_target_soc_response(data)
         assert result["target_soc"] == 80
-        assert result["enabled_values"] == [50, 60, 70, 80, 90, 100]
+        assert result["pending_target_soc"] == 90
 
 
 class TestParseChargeTimerResponse:

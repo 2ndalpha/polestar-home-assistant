@@ -9,9 +9,17 @@ SCAN_INTERVAL = timedelta(minutes=5)
 OIDC_BASE_URL = "https://polestarid.eu.polestar.com"
 OIDC_AUTH_URL = f"{OIDC_BASE_URL}/as/authorization.oauth2"
 OIDC_TOKEN_URL = f"{OIDC_BASE_URL}/as/token.oauth2"
+
+# Web client — used for GraphQL (mystar-v2)
 CLIENT_ID = "l3oopkc_10"
 REDIRECT_URI = "https://www.polestar.com/sign-in-callback"
 SCOPE = "openid profile email customer:attributes"
+
+# Mobile app client — used for PCCS gRPC (requires broader scope + 2SV)
+PCCS_CLIENT_ID = "lp8dyrd_10"
+PCCS_REDIRECT_URI = "polestar-explore://explore.polestar.com"
+PCCS_SCOPE = "openid profile email customer:attributes customer:attributes:write"
+PCCS_ACR_VALUES = "urn:volvoid:aal:bronze:2sv"
 
 # GraphQL API
 API_URL = "https://pc-api.polestar.com/eu-north-1/mystar-v2/"
