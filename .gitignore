@@ -10,3 +10,6 @@ build/
 htmlcov/
 .ruff_cache/
 .venv/
+research/
+plans/
+scripts/

@@ -6,6 +6,10 @@ from custom_components.polestar_soc.pccs import (
     _build_set_charge_timer_request,
     _build_set_target_soc_request,
     _build_time_of_day,
+    _parse_charge_timer_response,
+    _parse_target_soc_response,
+)
+from custom_components.polestar_soc.proto import (
     _decode_message,
     _decode_varint,
     _encode_field_bytes,
@@ -14,8 +18,6 @@ from custom_components.polestar_soc.pccs import (
     _get_bool,
     _get_int,
     _get_submessage,
-    _parse_charge_timer_response,
-    _parse_target_soc_response,
 )
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,27 @@
       },
       "odometer": {
         "name": "Odometer"
+      },
+      "climate_status": {
+        "name": "Climate status"
+      },
+      "driver_seat_heating": {
+        "name": "Driver seat heating"
+      },
+      "passenger_seat_heating": {
+        "name": "Passenger seat heating"
+      },
+      "rear_left_seat_heating": {
+        "name": "Rear left seat heating"
+      },
+      "rear_right_seat_heating": {
+        "name": "Rear right seat heating"
+      },
+      "steering_wheel_heating": {
+        "name": "Steering wheel heating"
+      },
+      "estimated_range": {
+        "name": "Estimated range"
       }
     },
     "number": {

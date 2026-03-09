@@ -39,3 +39,47 @@ def sample_odometer():
         "vin": "YSMYKEAE1RB000001",
         "odometerMeters": 12345678,
     }
+
+
+@pytest.fixture
+def sample_climate():
+    """Return a sample climate status dict (as returned by CepClient)."""
+    return {
+        "status": "Off",
+        "driver_seat_heating": "Off",
+        "passenger_seat_heating": "Off",
+        "rear_left_seat_heating": "Off",
+        "rear_right_seat_heating": "Off",
+        "steering_wheel_heating": "Off",
+    }
+
+
+@pytest.fixture
+def sample_cep_battery():
+    """Return a sample CEP battery dict (as returned by CepClient)."""
+    return {
+        "soc": 76.0,
+        "estimated_range_km": 230,
+        "charging_status": 2,
+        "charging_power_kw": 2.9,
+    }
+
+
+VIN = "YSMYKEAE1RB000001"
+
+
+@pytest.fixture
+def sample_coordinator_data(
+    sample_vehicle, sample_battery, sample_odometer, sample_climate, sample_cep_battery
+):
+    """Return a full coordinator data dict combining all sources."""
+    vin = sample_vehicle["vin"]
+    return {
+        "vehicles": [sample_vehicle],
+        "battery": {vin: sample_battery},
+        "odometer": {vin: sample_odometer},
+        "target_soc": {},
+        "charge_timer": {},
+        "climate": {vin: sample_climate},
+        "cep_battery": {vin: sample_cep_battery},
+    }

@@ -18,7 +18,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CLIMATE_RUNNING_STATUS_MAP, DOMAIN, HEATING_INTENSITY_MAP
 from .coordinator import PolestarCoordinator
 
 
@@ -26,30 +26,37 @@ from .coordinator import PolestarCoordinator
 class PolestarSensorDescription(SensorEntityDescription):
     """Describe a Polestar sensor."""
 
-    value_fn: Callable[[dict, dict | None, dict | None], object]
+    value_fn: Callable[[dict, str], object]
 
 
-def _battery_soc(vehicle: dict, battery: dict | None, odometer: dict | None) -> int | None:
+# ---------------------------------------------------------------------------
+# Value functions — each takes (coordinator_data, vin)
+# ---------------------------------------------------------------------------
+
+
+def _battery_soc(data: dict, vin: str) -> int | None:
+    battery = data.get("battery", {}).get(vin)
     if battery is None:
         return None
     return battery.get("batteryChargeLevelPercentage")
 
 
-def _charging_status(vehicle: dict, battery: dict | None, odometer: dict | None) -> str:
+def _charging_status(data: dict, vin: str) -> str:
+    battery = data.get("battery", {}).get(vin)
     if battery is None:
         return "Unknown"
     return PolestarCoordinator.format_charging_status(battery.get("chargingStatus"))
 
 
-def _charging_time_remaining(
-    vehicle: dict, battery: dict | None, odometer: dict | None
-) -> int | None:
+def _charging_time_remaining(data: dict, vin: str) -> int | None:
+    battery = data.get("battery", {}).get(vin)
     if battery is None:
         return None
     return battery.get("estimatedChargingTimeToFullMinutes")
 
 
-def _odometer_km(vehicle: dict, battery: dict | None, odometer: dict | None) -> float | None:
+def _odometer_km(data: dict, vin: str) -> float | None:
+    odometer = data.get("odometer", {}).get(vin)
     if odometer is None:
         return None
     meters = odometer.get("odometerMeters")
@@ -57,6 +64,36 @@ def _odometer_km(vehicle: dict, battery: dict | None, odometer: dict | None) -> 
         return None
     return round(meters / 1000, 1)
 
+
+def _climate_status(data: dict, vin: str) -> str | None:
+    climate = data.get("climate", {}).get(vin)
+    if climate is None:
+        return None
+    return climate.get("status")
+
+
+def _climate_heating(key: str) -> Callable[[dict, str], str | None]:
+    """Create a value_fn for a heating intensity sensor."""
+
+    def _value_fn(data: dict, vin: str) -> str | None:
+        climate = data.get("climate", {}).get(vin)
+        if climate is None:
+            return None
+        return climate.get(key)
+
+    return _value_fn
+
+
+def _estimated_range(data: dict, vin: str) -> int | None:
+    cep_battery = data.get("cep_battery", {}).get(vin)
+    if cep_battery is None:
+        return None
+    return cep_battery.get("estimated_range_km")
+
+
+# Options lists for ENUM sensors
+_CLIMATE_STATUS_OPTIONS = list(CLIMATE_RUNNING_STATUS_MAP.values())
+_HEATING_INTENSITY_OPTIONS = list(HEATING_INTENSITY_MAP.values())
 
 SENSOR_DESCRIPTIONS: tuple[PolestarSensorDescription, ...] = (
     PolestarSensorDescription(
@@ -87,6 +124,56 @@ SENSOR_DESCRIPTIONS: tuple[PolestarSensorDescription, ...] = (
         device_class=SensorDeviceClass.DISTANCE,
         state_class=SensorStateClass.TOTAL_INCREASING,
         value_fn=_odometer_km,
+    ),
+    PolestarSensorDescription(
+        key="climate_status",
+        translation_key="climate_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=_CLIMATE_STATUS_OPTIONS,
+        value_fn=_climate_status,
+    ),
+    PolestarSensorDescription(
+        key="driver_seat_heating",
+        translation_key="driver_seat_heating",
+        device_class=SensorDeviceClass.ENUM,
+        options=_HEATING_INTENSITY_OPTIONS,
+        value_fn=_climate_heating("driver_seat_heating"),
+    ),
+    PolestarSensorDescription(
+        key="passenger_seat_heating",
+        translation_key="passenger_seat_heating",
+        device_class=SensorDeviceClass.ENUM,
+        options=_HEATING_INTENSITY_OPTIONS,
+        value_fn=_climate_heating("passenger_seat_heating"),
+    ),
+    PolestarSensorDescription(
+        key="rear_left_seat_heating",
+        translation_key="rear_left_seat_heating",
+        device_class=SensorDeviceClass.ENUM,
+        options=_HEATING_INTENSITY_OPTIONS,
+        value_fn=_climate_heating("rear_left_seat_heating"),
+    ),
+    PolestarSensorDescription(
+        key="rear_right_seat_heating",
+        translation_key="rear_right_seat_heating",
+        device_class=SensorDeviceClass.ENUM,
+        options=_HEATING_INTENSITY_OPTIONS,
+        value_fn=_climate_heating("rear_right_seat_heating"),
+    ),
+    PolestarSensorDescription(
+        key="steering_wheel_heating",
+        translation_key="steering_wheel_heating",
+        device_class=SensorDeviceClass.ENUM,
+        options=_HEATING_INTENSITY_OPTIONS,
+        value_fn=_climate_heating("steering_wheel_heating"),
+    ),
+    PolestarSensorDescription(
+        key="estimated_range",
+        translation_key="estimated_range",
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        device_class=SensorDeviceClass.DISTANCE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=_estimated_range,
     ),
 )
 
@@ -148,12 +235,4 @@ class PolestarSensor(CoordinatorEntity[PolestarCoordinator], SensorEntity):
         data = self.coordinator.data
         if not data:
             return None
-        battery = data.get("battery", {}).get(self._vin)
-        odometer = data.get("odometer", {}).get(self._vin)
-        # Find current vehicle info
-        vehicle = {}
-        for v in data.get("vehicles", []):
-            if v["vin"] == self._vin:
-                vehicle = v
-                break
-        return self.entity_description.value_fn(vehicle, battery, odometer)
+        return self.entity_description.value_fn(data, self._vin)

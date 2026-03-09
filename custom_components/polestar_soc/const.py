@@ -19,6 +19,9 @@ API_URL = "https://pc-api.polestar.com/eu-north-1/mystar-v2/"
 # PCCS gRPC API
 PCCS_API_HOST = "api.pccs-prod.plstr.io"
 
+# Volvo CEP gRPC API (vehicle state reads)
+CEP_API_HOST = "cepmobtoken.eu.prod.c3.volvocars.com"
+
 QUERY_GET_CARS = """
 query getCars {
   getConsumerCarsV2 {
@@ -58,4 +61,24 @@ CHARGING_STATUS_MAP = {
     "CHARGING_STATUS_FAULT": "Fault",
     "CHARGING_STATUS_UNSPECIFIED": "Unknown",
     "CHARGING_STATUS_SCHEDULED": "Scheduled",
+}
+
+# Climate running status enum (field 2 of ParkingClimatizationState)
+CLIMATE_RUNNING_STATUS_MAP: dict[int, str] = {
+    0: "Unknown",
+    1: "Starting",
+    2: "Off",
+    3: "Pre-conditioning",
+    4: "Pre-conditioning (external power)",
+    5: "Pre-cleaning",
+    6: "Pre-conditioning and cleaning",
+    7: "Residual heat",
+}
+
+# Heating intensity enum (seat heaters + steering wheel)
+HEATING_INTENSITY_MAP: dict[int, str] = {
+    0: "Off",
+    1: "Low",
+    2: "Medium",
+    3: "High",
 }

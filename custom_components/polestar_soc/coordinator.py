@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .cep import CepClient
 from .const import (
     API_URL,
     CHARGING_STATUS_MAP,
@@ -221,6 +222,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
         self.api.access_token = entry.data.get("access_token")
         self.api.refresh_token = entry.data.get("refresh_token")
         self.pccs = PccsClient(self.api.access_token or "")
+        self.cep = CepClient(self.api.access_token or "")
         self._email: str = entry.data["email"]
         self._password: str = entry.data["password"]
 
@@ -278,6 +280,8 @@ class PolestarCoordinator(DataUpdateCoordinator):
                     "odometer": {},
                     "target_soc": {},
                     "charge_timer": {},
+                    "climate": {},
+                    "cep_battery": {},
                 }
 
             vins = [v["vin"] for v in vehicles]
@@ -306,12 +310,27 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 except Exception:
                     _LOGGER.debug("Failed to fetch PCCS charge timer for %s", vin)
 
+            # Fetch CEP data (climate status + battery) per VIN
+            climate_by_vin: dict = {}
+            cep_battery_by_vin: dict = {}
+            for vin in vins:
+                try:
+                    climate_by_vin[vin] = self.cep.get_parking_climatization(vin)
+                except Exception:
+                    _LOGGER.debug("Failed to fetch CEP climate for %s", vin)
+                try:
+                    cep_battery_by_vin[vin] = self.cep.get_battery(vin)
+                except Exception:
+                    _LOGGER.debug("Failed to fetch CEP battery for %s", vin)
+
             return {
                 "vehicles": vehicles,
                 "battery": battery_by_vin,
                 "odometer": odometer_by_vin,
                 "target_soc": target_soc_by_vin,
                 "charge_timer": charge_timer_by_vin,
+                "climate": climate_by_vin,
+                "cep_battery": cep_battery_by_vin,
             }
 
         return await self.hass.async_add_executor_job(_do_fetch)
@@ -326,8 +345,14 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 "refresh_token": self.api.refresh_token,
             },
         )
-        # Keep PCCS client token in sync
+        # Keep gRPC client tokens in sync
         self.pccs.access_token = self.api.access_token or ""
+        self.cep.access_token = self.api.access_token or ""
+
+    def close(self) -> None:
+        """Close gRPC channels."""
+        self.pccs.close()
+        self.cep.close()
 
     @staticmethod
     def format_charging_status(status: str | None) -> str:
