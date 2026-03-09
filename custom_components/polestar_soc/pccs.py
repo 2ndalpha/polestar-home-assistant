@@ -163,7 +163,22 @@ def _parse_target_soc_response(data: bytes) -> dict:
 
 
 def _parse_charge_timer_response(data: bytes) -> dict:
-    """Parse GetGlobalChargeTimerStream / SetGlobalChargeTimer response."""
+    """Parse GetGlobalChargeTimerStream / SetGlobalChargeTimer response.
+
+    Response structure (GetGlobalChargeTimerResponse):
+        field 1: id (string)                     — echoed request ID
+        field 2: vin (string)                    — echoed VIN
+        field 3: globalChargeTimer (message)     — current timer data
+        field 4: pendingGlobalChargeTimer (message)
+
+    GlobalChargeTimer sub-message:
+        field 1: startTime (TimeOfDay message)
+        field 2: endTime (TimeOfDay message)
+        field 3: departureTimeHours (int32)
+        field 4: departureTimeMinutes (int32)
+        field 5: isDepartureTimeActive (bool)
+        field 6: isLocationChargeTimerActive (bool)
+    """
     if not data:
         return {
             "start_hour": None,
@@ -176,20 +191,34 @@ def _parse_charge_timer_response(data: bytes) -> dict:
             "is_location_timer_active": False,
         }
 
-    fields = _decode_message(data)
+    envelope = _decode_message(data)
 
-    start_time = _get_submessage(fields, 1)
-    end_time = _get_submessage(fields, 2)
+    # Extract GlobalChargeTimer sub-message from field 3 of the envelope
+    timer = _get_submessage(envelope, 3)
+    if not timer:
+        return {
+            "start_hour": None,
+            "start_min": None,
+            "end_hour": None,
+            "end_min": None,
+            "departure_hour": None,
+            "departure_min": None,
+            "is_departure_active": False,
+            "is_location_timer_active": False,
+        }
+
+    start_time = _get_submessage(timer, 1)
+    end_time = _get_submessage(timer, 2)
 
     return {
         "start_hour": _get_int(start_time, 1) if start_time else None,
         "start_min": _get_int(start_time, 2) if start_time else None,
         "end_hour": _get_int(end_time, 1) if end_time else None,
         "end_min": _get_int(end_time, 2) if end_time else None,
-        "departure_hour": _get_int(fields, 3, 0) or None,
-        "departure_min": _get_int(fields, 4, 0) or None,
-        "is_departure_active": _get_bool(fields, 5),
-        "is_location_timer_active": _get_bool(fields, 6),
+        "departure_hour": _get_int(timer, 3, 0) or None,
+        "departure_min": _get_int(timer, 4, 0) or None,
+        "is_departure_active": _get_bool(timer, 5),
+        "is_location_timer_active": _get_bool(timer, 6),
     }
 
 
@@ -311,17 +340,22 @@ class PccsClient:
         end_hour: int,
         end_min: int,
     ) -> dict:
-        """Set the global charge timer for a vehicle."""
+        """Set the global charge timer for a vehicle.
+
+        SetGlobalChargeTimer is a server-streaming RPC; we take the first response.
+        """
         channel = self._get_channel()
-        method = channel.unary_unary(
+        method = channel.unary_stream(
             _METHOD_SET_CHARGE_TIMER,
             request_serializer=_identity_serialize,
             response_deserializer=_identity_deserialize,
         )
         request = _build_set_charge_timer_request(vin, start_hour, start_min, end_hour, end_min)
         try:
-            response = method(request, metadata=self._metadata(vin), timeout=30)
-            return _parse_charge_timer_response(response)
+            responses = method(request, metadata=self._metadata(vin), timeout=30)
+            for response in responses:
+                return _parse_charge_timer_response(response)
+            return _parse_charge_timer_response(b"")
         except grpc.RpcError as err:
             _LOGGER.warning("PCCS SetGlobalChargeTimer failed: %s", err)
             raise

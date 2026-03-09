@@ -286,10 +286,20 @@ class TestParseChargeTimerResponse:
         assert result["end_hour"] is None
         assert result["is_departure_active"] is False
 
+    def test_no_timer_in_envelope(self):
+        # Envelope with id and vin but no timer sub-message in field 3
+        data = _encode_field_bytes(1, b"some-id") + _encode_field_bytes(2, b"VIN123")
+        result = _parse_charge_timer_response(data)
+        assert result["start_hour"] is None
+        assert result["end_hour"] is None
+
     def test_with_times(self):
+        # Build GlobalChargeTimer sub-message: field 1=start, field 2=end
         start = _build_time_of_day(22, 30)
         end = _build_time_of_day(6, 0)
-        data = _encode_field_bytes(1, start) + _encode_field_bytes(2, end)
+        timer = _encode_field_bytes(1, start) + _encode_field_bytes(2, end)
+        # Wrap in response envelope: field 3 = globalChargeTimer
+        data = _encode_field_bytes(3, timer)
         result = _parse_charge_timer_response(data)
         assert result["start_hour"] == 22
         assert result["start_min"] == 30

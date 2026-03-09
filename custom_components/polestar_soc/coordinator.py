@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import re
+from collections.abc import Callable
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -48,9 +49,16 @@ def _b64urlencode(data: bytes) -> str:
 class PolestarAPI:
     """Handle Polestar OAuth2 PKCE authentication and GraphQL queries."""
 
-    def __init__(self, otp_callback: callable | None = None) -> None:
+    def __init__(
+        self,
+        client_id: str = CLIENT_ID,
+        redirect_uri: str = REDIRECT_URI,
+        otp_callback: Callable[[], str | None] | None = None,
+    ) -> None:
         self.access_token: str | None = None
         self.refresh_token: str | None = None
+        self._client_id = client_id
+        self._redirect_uri = redirect_uri
         self._otp_callback = otp_callback
 
     def _get_otp_code(self) -> str | None:
@@ -71,7 +79,6 @@ class PolestarAPI:
         """Perform full OAuth2 Authorization Code + PKCE login."""
         self._client_id = client_id
         self._redirect_uri = redirect_uri
-
         code_verifier = _b64urlencode(os.urandom(32))
         code_challenge = _b64urlencode(hashlib.sha256(code_verifier.encode()).digest())
         state = _b64urlencode(os.urandom(12))
@@ -227,7 +234,7 @@ class PolestarAPI:
 
     def refresh_tokens(self, refresh_token: str) -> dict:
         """Refresh the access token using a refresh token."""
-        client_id = getattr(self, "_client_id", CLIENT_ID)
+        client_id = self._client_id
         resp = requests.post(
             OIDC_TOKEN_URL,
             data={
@@ -296,8 +303,10 @@ class PolestarCoordinator(DataUpdateCoordinator):
         self.api.access_token = entry.data.get("access_token")
         self.api.refresh_token = entry.data.get("refresh_token")
 
-        # Separate API instance for PCCS (needs iOS client_id)
-        self._pccs_api = PolestarAPI()
+        # Separate API instance for PCCS (needs mobile client_id)
+        self._pccs_api = PolestarAPI(
+            client_id=PCCS_CLIENT_ID, redirect_uri=PCCS_REDIRECT_URI,
+        )
         self._pccs_api.access_token = entry.data.get("pccs_access_token")
         self._pccs_api.refresh_token = entry.data.get("pccs_refresh_token")
 
@@ -327,13 +336,21 @@ class PolestarCoordinator(DataUpdateCoordinator):
 
     async def _refresh_or_relogin(self) -> None:
         """Try token refresh, fall back to full re-login for both API clients."""
-        # Refresh/relogin the main (web) API
+        # Refresh/relogin the main (web) API — failure is fatal
         await self._refresh_or_relogin_api(self.api, CLIENT_ID, REDIRECT_URI, SCOPE)
-        # Refresh/relogin the PCCS (mobile) API
-        await self._refresh_or_relogin_api(
-            self._pccs_api, PCCS_CLIENT_ID, PCCS_REDIRECT_URI, PCCS_SCOPE,
-            acr_values=PCCS_ACR_VALUES,
-        )
+        self._update_stored_tokens()
+        # Refresh/relogin the PCCS (mobile) API — failure is non-fatal
+        # (re-login requires 2FA which can't be done in background)
+        try:
+            await self._refresh_or_relogin_api(
+                self._pccs_api, PCCS_CLIENT_ID, PCCS_REDIRECT_URI, PCCS_SCOPE,
+                acr_values=PCCS_ACR_VALUES,
+            )
+        except Exception:
+            _LOGGER.warning(
+                "PCCS token refresh failed; PCCS sensors will be unavailable "
+                "until the integration is reconfigured"
+            )
         self._update_stored_tokens()
 
     async def _refresh_or_relogin_api(
