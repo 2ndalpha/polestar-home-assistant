@@ -37,10 +37,12 @@ class TestServicePaths:
         assert _METHOD_SET_TARGET_SOC == "/pccs.chronos.services.v1.TargetSocService/SetTargetSoc"
 
     def test_charge_timer_get_path(self):
-        assert _METHOD_GET_CHARGE_TIMER == "/pccs.chronos.services.v2.GlobalChargeTimerService/GetGlobalChargeTimerStream"
+        expected = "/pccs.chronos.services.v2.GlobalChargeTimerService/GetGlobalChargeTimerStream"
+        assert expected == _METHOD_GET_CHARGE_TIMER
 
     def test_charge_timer_set_path(self):
-        assert _METHOD_SET_CHARGE_TIMER == "/pccs.chronos.services.v2.GlobalChargeTimerService/SetGlobalChargeTimer"
+        expected = "/pccs.chronos.services.v2.GlobalChargeTimerService/SetGlobalChargeTimer"
+        assert expected == _METHOD_SET_CHARGE_TIMER
 
 
 # ---------------------------------------------------------------------------

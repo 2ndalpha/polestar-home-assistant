@@ -135,11 +135,7 @@ class PolestarAPI:
                     r'action:\s*"(/as/[^"]+/resume/as/authorization\.ping)"',
                     resp.text,
                 )
-                otp_resume = (
-                    OIDC_BASE_URL + action_match.group(1)
-                    if action_match
-                    else resume_url
-                )
+                otp_resume = OIDC_BASE_URL + action_match.group(1) if action_match else resume_url
 
                 otp_code = self._get_otp_code()
                 if not otp_code:
@@ -159,9 +155,7 @@ class PolestarAPI:
                         resp.text,
                     )
                     continue_url = (
-                        OIDC_BASE_URL + action_match2.group(1)
-                        if action_match2
-                        else otp_resume
+                        OIDC_BASE_URL + action_match2.group(1) if action_match2 else otp_resume
                     )
                     resp = session.post(
                         continue_url,
@@ -171,9 +165,7 @@ class PolestarAPI:
                     )
 
                 if resp.status_code not in (302, 303):
-                    raise UpdateFailed(
-                        f"2FA verification failed ({resp.status_code})"
-                    )
+                    raise UpdateFailed(f"2FA verification failed ({resp.status_code})")
             else:
                 raise UpdateFailed(f"Unexpected login response ({resp.status_code})")
 
@@ -305,7 +297,8 @@ class PolestarCoordinator(DataUpdateCoordinator):
 
         # Separate API instance for PCCS (needs mobile client_id)
         self._pccs_api = PolestarAPI(
-            client_id=PCCS_CLIENT_ID, redirect_uri=PCCS_REDIRECT_URI,
+            client_id=PCCS_CLIENT_ID,
+            redirect_uri=PCCS_REDIRECT_URI,
         )
         self._pccs_api.access_token = entry.data.get("pccs_access_token")
         self._pccs_api.refresh_token = entry.data.get("pccs_refresh_token")
@@ -343,7 +336,10 @@ class PolestarCoordinator(DataUpdateCoordinator):
         # (re-login requires 2FA which can't be done in background)
         try:
             await self._refresh_or_relogin_api(
-                self._pccs_api, PCCS_CLIENT_ID, PCCS_REDIRECT_URI, PCCS_SCOPE,
+                self._pccs_api,
+                PCCS_CLIENT_ID,
+                PCCS_REDIRECT_URI,
+                PCCS_SCOPE,
                 acr_values=PCCS_ACR_VALUES,
             )
         except Exception:
@@ -364,9 +360,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
         """Try token refresh, fall back to full re-login for a single API client."""
         if api.refresh_token:
             try:
-                await self.hass.async_add_executor_job(
-                    api.refresh_tokens, api.refresh_token
-                )
+                await self.hass.async_add_executor_job(api.refresh_tokens, api.refresh_token)
                 return
             except Exception:
                 _LOGGER.debug("Refresh token failed for %s, doing full re-login", client_id)
@@ -374,8 +368,13 @@ class PolestarCoordinator(DataUpdateCoordinator):
         # Full re-login
         try:
             await self.hass.async_add_executor_job(
-                api.login, self._email, self._password,
-                client_id, redirect_uri, scope, acr_values,
+                api.login,
+                self._email,
+                self._password,
+                client_id,
+                redirect_uri,
+                scope,
+                acr_values,
             )
         except ConfigEntryAuthFailed:
             raise

@@ -18,7 +18,6 @@ import grpc
 from .const import PCCS_API_HOST
 from .proto import (
     _decode_message,
-    _decode_varint,
     _encode_field_bytes,
     _encode_field_varint,
     _get_bool,
@@ -80,7 +79,7 @@ def _build_chronos_request(vin: str) -> bytes:
     msg += _encode_field_bytes(2, vin.encode("utf-8"))
     msg += _encode_field_bytes(3, b"RCS")
     # TimeZone message: field 1 = offsetMinutes (signed varint)
-    utc_offset = datetime.datetime.now(datetime.timezone.utc).astimezone().utcoffset()
+    utc_offset = datetime.datetime.now(datetime.UTC).astimezone().utcoffset()
     offset_minutes = int(utc_offset.total_seconds()) // 60
     # Proto3 int32: negative values need two's-complement encoding as uint64
     encoded_offset = offset_minutes if offset_minutes >= 0 else offset_minutes + (1 << 64)
