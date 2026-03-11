@@ -32,15 +32,17 @@ def _mock_web_api():
 def _mock_pccs_api_needs_otp():
     """Create a mock PolestarAPI for PCCS that needs OTP."""
     api = MagicMock()
-    api.login_start_2fa = MagicMock(return_value={
-        "needs_otp": True,
-        "_session_state": {
-            "session": MagicMock(),
-            "otp_resume": "url",
-            "resume_url": "url",
-            "code_verifier": "v",
-        },
-    })
+    api.login_start_2fa = MagicMock(
+        return_value={
+            "needs_otp": True,
+            "_session_state": {
+                "session": MagicMock(),
+                "otp_resume": "url",
+                "resume_url": "url",
+                "code_verifier": "v",
+            },
+        }
+    )
     api.login_complete_2fa = MagicMock(return_value=_PCCS_TOKENS)
     return api
 
@@ -158,9 +160,7 @@ class TestConfigFlowUser:
             "custom_components.polestar_soc.config_flow.PolestarAPI",
             return_value=web_api,
         ):
-            result = await flow.async_step_user(
-                {"email": "test@polestar.com", "password": "wrong"}
-            )
+            result = await flow.async_step_user({"email": "test@polestar.com", "password": "wrong"})
             assert result["type"] is FlowResultType.FORM
             assert result["step_id"] == "user"
             assert result["errors"]["base"] == "invalid_auth"

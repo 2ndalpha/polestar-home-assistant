@@ -43,9 +43,7 @@ class PolestarSOCConfigFlow(ConfigFlow, domain=DOMAIN):
 
     # -- Step: user (email + password) ---------------------------------------
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the initial step."""
         errors: dict[str, str] = {}
 
@@ -89,9 +87,7 @@ class PolestarSOCConfigFlow(ConfigFlow, domain=DOMAIN):
 
     # -- Step: OTP -----------------------------------------------------------
 
-    async def async_step_otp(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
+    async def async_step_otp(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the OTP verification step."""
         errors: dict[str, str] = {}
 

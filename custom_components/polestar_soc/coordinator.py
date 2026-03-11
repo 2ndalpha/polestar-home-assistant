@@ -153,9 +153,7 @@ class PolestarAPI:
                 r'action="(/as/[^"]+/resume/as/authorization\.ping)"',
                 resp.text,
             )
-            continue_url = (
-                OIDC_BASE_URL + action_match.group(1) if action_match else otp_resume
-            )
+            continue_url = OIDC_BASE_URL + action_match.group(1) if action_match else otp_resume
             resp = session.post(
                 continue_url,
                 data={"continue.authentication": "true"},
