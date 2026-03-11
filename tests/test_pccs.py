@@ -216,6 +216,8 @@ class TestBuildSetTargetSocRequest:
         fields = _decode_message(data)
         # Field 1 is the ChronosRequest sub-message
         assert 1 in fields
+        chronos = _decode_message(fields[1][0])
+        assert chronos[2] == [b"TESTVIN123"]
         # Field 2 is the target SOC value
         assert fields[2] == [80]
 

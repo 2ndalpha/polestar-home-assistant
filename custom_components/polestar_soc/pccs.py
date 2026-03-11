@@ -3,8 +3,8 @@
 Communicates with the PCCS gRPC API at api.pccs-prod.plstr.io for
 vehicle command-and-control operations (charge target, charge timer, etc.).
 
-Since we don't have compiled .proto stubs, we use grpc generic channel methods
-with manual protobuf wire-format encoding/decoding.
+Uses grpc generic channel methods with manual protobuf wire-format
+encoding/decoding (no compiled .proto stubs required).
 """
 
 from __future__ import annotations
@@ -42,27 +42,9 @@ _METHOD_SET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/SetGlobalChargeTimer"
 # ---------------------------------------------------------------------------
 # Protobuf message builders
 # ---------------------------------------------------------------------------
-# Protobuf field numbers for each message type.
-#
-# TargetSoc message:
-#   1: targetSoc (int32)
-#   2: enabledTargetSocValues (repeated int32)
-#   3: chargeTargetLevelSettingType (enum)
-#   4: chargingTimeEstimatedToTargetSocMinutes (int32)
-#   5: pendingTargetSoc (int32)
-#
-# GlobalChargeTimer message:
-#   1: startTime (TimeOfDay message)
-#   2: endTime (TimeOfDay message)
-#   3: departureTimeHours (int32)
-#   4: departureTimeMinutes (int32)
-#   5: isDepartureTimeActive (bool)
-#   6: isLocationChargeTimerActive (bool)
-#   7: pendingGlobalChargeTimer (message)
-#
-# TimeOfDay message:
-#   1: hours (int32)
-#   2: minutes (int32)
+# All PCCS requests wrap a ChronosRequest in field 1.
+# All PCCS responses wrap an envelope: field 1=id, field 2=vin, field 3=data.
+# See docstrings on _parse_*_response() for detailed field layouts.
 
 
 def _build_chronos_request(vin: str) -> bytes:

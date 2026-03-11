@@ -16,12 +16,20 @@
           "email": "Email",
           "password": "Password"
         }
+      },
+      "otp": {
+        "title": "Verification code",
+        "description": "A verification code has been sent to your Polestar ID email. Enter it below to enable charge limit and charge timer controls. You can leave this blank to skip \u2014 other sensors will still work.",
+        "data": {
+          "otp": "Verification code"
+        }
       }
     },
     "error": {
       "invalid_auth": "Invalid email or password.",
       "cannot_connect": "Could not connect to Polestar API.",
-      "no_vehicles": "No vehicles found on this account."
+      "no_vehicles": "No vehicles found on this account.",
+      "invalid_otp": "Invalid verification code. Please try again."
     },
     "abort": {
       "already_configured": "This account is already configured.",

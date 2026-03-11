@@ -25,10 +25,8 @@ from .const import (
     OIDC_AUTH_URL,
     OIDC_BASE_URL,
     OIDC_TOKEN_URL,
-    PCCS_ACR_VALUES,
     PCCS_CLIENT_ID,
     PCCS_REDIRECT_URI,
-    PCCS_SCOPE,
     QUERY_GET_CARS,
     QUERY_TELEMATICS,
     REDIRECT_URI,
@@ -61,31 +59,36 @@ class PolestarAPI:
         self._redirect_uri = redirect_uri
         self._otp_callback = otp_callback
 
+    @property
+    def client_id(self) -> str:
+        """Return the OAuth2 client_id for this API instance."""
+        return self._client_id
+
     def _get_otp_code(self) -> str | None:
         """Get OTP code for 2FA via callback."""
         if self._otp_callback:
             return self._otp_callback()
         return None
 
-    def login(
+    # -- Private auth helpers ------------------------------------------------
+
+    def _start_auth_session(
         self,
-        email: str,
-        password: str,
-        client_id: str = CLIENT_ID,
-        redirect_uri: str = REDIRECT_URI,
-        scope: str = SCOPE,
+        scope: str,
         acr_values: str | None = None,
-    ) -> dict:
-        """Perform full OAuth2 Authorization Code + PKCE login."""
-        self._client_id = client_id
-        self._redirect_uri = redirect_uri
+    ) -> tuple[requests.Session, str, str]:
+        """Start OAuth2 PKCE session: auth request + extract resume URL.
+
+        Returns (session, resume_url, code_verifier).
+        """
+        client_id = self._client_id
+        redirect_uri = self._redirect_uri
         code_verifier = _b64urlencode(os.urandom(32))
         code_challenge = _b64urlencode(hashlib.sha256(code_verifier.encode()).digest())
         state = _b64urlencode(os.urandom(12))
 
         session = requests.Session()
 
-        # Step 1: Authorization request
         auth_params = {
             "client_id": client_id,
             "redirect_uri": redirect_uri,
@@ -105,75 +108,74 @@ class PolestarAPI:
         )
         resp.raise_for_status()
 
-        # Step 2: Extract resume path
         match = re.search(r"(/as/[^/]+/resume/as/authorization\.ping)", resp.text)
         if not match:
             raise UpdateFailed("Could not find login form endpoint")
 
         resume_url = OIDC_BASE_URL + match.group(1)
+        return session, resume_url, code_verifier
 
-        # Step 3: Submit credentials
-        resp = session.post(
+    def _submit_credentials(
+        self,
+        session: requests.Session,
+        resume_url: str,
+        email: str,
+        password: str,
+    ) -> requests.Response:
+        """POST credentials to the login form. Returns the response."""
+        return session.post(
             resume_url,
             data={
                 "pf.username": email,
                 "pf.pass": password,
-                "client_id": client_id,
+                "client_id": self._client_id,
             },
             allow_redirects=False,
             timeout=HTTP_TIMEOUT,
         )
 
-        if resp.status_code not in (302, 303):
-            if "ERR001" in resp.text or "authMessage" in resp.text:
-                raise ConfigEntryAuthFailed("Invalid email or password")
+    @staticmethod
+    def _submit_otp(
+        session: requests.Session,
+        otp_resume: str,
+        otp_code: str,
+    ) -> requests.Response:
+        """Submit OTP code and handle the success-form continuation."""
+        resp = session.post(
+            otp_resume,
+            data={"otp": otp_code},
+            allow_redirects=False,
+            timeout=HTTP_TIMEOUT,
+        )
+        # OTP success returns a page with auto-submit form
+        if "otp-success-form" in resp.text:
+            action_match = re.search(
+                r'action="(/as/[^"]+/resume/as/authorization\.ping)"',
+                resp.text,
+            )
+            continue_url = (
+                OIDC_BASE_URL + action_match.group(1) if action_match else otp_resume
+            )
+            resp = session.post(
+                continue_url,
+                data={"continue.authentication": "true"},
+                allow_redirects=False,
+                timeout=HTTP_TIMEOUT,
+            )
+        return resp
 
-            # 2SV: server returned OTP challenge page (200 with form)
-            if resp.status_code == 200:
-                # Extract action URL from JS globalContext
-                action_match = re.search(
-                    r'action:\s*"(/as/[^"]+/resume/as/authorization\.ping)"',
-                    resp.text,
-                )
-                otp_resume = OIDC_BASE_URL + action_match.group(1) if action_match else resume_url
-
-                otp_code = self._get_otp_code()
-                if not otp_code:
-                    raise UpdateFailed("2FA code required but not provided")
-
-                _LOGGER.debug("Submitting OTP to %s", otp_resume)
-                resp = session.post(
-                    otp_resume,
-                    data={"otp": otp_code},
-                    allow_redirects=False,
-                    timeout=HTTP_TIMEOUT,
-                )
-                # OTP success returns a page with auto-submit form
-                if "otp-success-form" in resp.text:
-                    action_match2 = re.search(
-                        r'action="(/as/[^"]+/resume/as/authorization\.ping)"',
-                        resp.text,
-                    )
-                    continue_url = (
-                        OIDC_BASE_URL + action_match2.group(1) if action_match2 else otp_resume
-                    )
-                    resp = session.post(
-                        continue_url,
-                        data={"continue.authentication": "true"},
-                        allow_redirects=False,
-                        timeout=HTTP_TIMEOUT,
-                    )
-
-                if resp.status_code not in (302, 303):
-                    raise UpdateFailed(f"2FA verification failed ({resp.status_code})")
-            else:
-                raise UpdateFailed(f"Unexpected login response ({resp.status_code})")
-
+    @staticmethod
+    def _extract_auth_code(
+        session: requests.Session,
+        resp: requests.Response,
+        resume_url: str,
+    ) -> str:
+        """Extract auth code from redirect, handling consent if needed."""
         redirect_url = resp.headers.get("Location", "")
         parsed = urlparse(redirect_url)
         params = parse_qs(parsed.query)
 
-        # Step 3a: Handle consent/confirmation
+        # Handle consent/confirmation
         if "code" not in params and "uid" in params:
             uid = params["uid"][0]
             resp = session.post(
@@ -199,17 +201,23 @@ class PolestarAPI:
         if "code" not in params:
             raise UpdateFailed("No authorization code received")
 
-        auth_code = params["code"][0]
+        return params["code"][0]
 
-        # Step 4: Exchange code for tokens
+    def _exchange_code_for_tokens(
+        self,
+        session: requests.Session,
+        auth_code: str,
+        code_verifier: str,
+    ) -> dict:
+        """Exchange authorization code for tokens and store them."""
         resp = session.post(
             OIDC_TOKEN_URL,
             data={
                 "grant_type": "authorization_code",
                 "code": auth_code,
                 "code_verifier": code_verifier,
-                "client_id": client_id,
-                "redirect_uri": redirect_uri,
+                "client_id": self._client_id,
+                "redirect_uri": self._redirect_uri,
             },
             headers={"Accept": "application/json"},
             timeout=HTTP_TIMEOUT,
@@ -223,6 +231,122 @@ class PolestarAPI:
         self.access_token = tokens["access_token"]
         self.refresh_token = tokens.get("refresh_token")
         return tokens
+
+    @staticmethod
+    def _detect_otp_challenge(resp: requests.Response, resume_url: str) -> str | None:
+        """Check if a credential-POST response is a 2FA challenge.
+
+        Returns the OTP resume URL if 2FA is required, or None.
+        """
+        if resp.status_code in (302, 303):
+            return None  # No 2FA — redirect means success
+        if resp.status_code != 200:
+            return None  # Not an OTP page
+        if "ERR001" in resp.text or "authMessage" in resp.text:
+            return None  # Auth error, not OTP
+        action_match = re.search(
+            r'action:\s*"(/as/[^"]+/resume/as/authorization\.ping)"',
+            resp.text,
+        )
+        if not action_match:
+            return None
+        return OIDC_BASE_URL + action_match.group(1)
+
+    # -- Public login methods ------------------------------------------------
+
+    def login(
+        self,
+        email: str,
+        password: str,
+        scope: str = SCOPE,
+        acr_values: str | None = None,
+    ) -> dict:
+        """Perform full OAuth2 Authorization Code + PKCE login."""
+        session, resume_url, code_verifier = self._start_auth_session(scope, acr_values)
+        resp = self._submit_credentials(session, resume_url, email, password)
+
+        if resp.status_code not in (302, 303):
+            if "ERR001" in resp.text or "authMessage" in resp.text:
+                raise ConfigEntryAuthFailed("Invalid email or password")
+
+            # 2SV: server returned OTP challenge page (200 with form)
+            otp_resume = self._detect_otp_challenge(resp, resume_url)
+            if otp_resume:
+                otp_code = self._get_otp_code()
+                if not otp_code:
+                    raise UpdateFailed("2FA code required but not provided")
+
+                _LOGGER.debug("Submitting OTP to %s", otp_resume)
+                resp = self._submit_otp(session, otp_resume, otp_code)
+
+                if resp.status_code not in (302, 303):
+                    raise UpdateFailed(f"2FA verification failed ({resp.status_code})")
+            else:
+                raise UpdateFailed(f"Unexpected login response ({resp.status_code})")
+
+        auth_code = self._extract_auth_code(session, resp, resume_url)
+        return self._exchange_code_for_tokens(session, auth_code, code_verifier)
+
+    def login_start_2fa(
+        self,
+        email: str,
+        password: str,
+        scope: str = SCOPE,
+        acr_values: str | None = None,
+    ) -> dict:
+        """Start login with 2FA. Triggers OTP email.
+
+        Returns a dict with ``"needs_otp": True`` and an opaque
+        ``"_session_state"`` if the server challenges for OTP.
+        If no 2FA is required, completes the flow and returns tokens
+        (with ``"access_token"`` present).
+        """
+        session, resume_url, code_verifier = self._start_auth_session(scope, acr_values)
+        resp = self._submit_credentials(session, resume_url, email, password)
+
+        if resp.status_code not in (302, 303):
+            if "ERR001" in resp.text or "authMessage" in resp.text:
+                raise ConfigEntryAuthFailed("Invalid email or password")
+
+            otp_resume = self._detect_otp_challenge(resp, resume_url)
+            if otp_resume:
+                # 2FA triggered — return session state for the caller to
+                # collect the OTP code and call login_complete_2fa().
+                return {
+                    "needs_otp": True,
+                    "_session_state": {
+                        "session": session,
+                        "otp_resume": otp_resume,
+                        "resume_url": resume_url,
+                        "code_verifier": code_verifier,
+                    },
+                }
+
+            raise UpdateFailed(f"Unexpected login response ({resp.status_code})")
+
+        # No 2FA — complete the flow directly
+        auth_code = self._extract_auth_code(session, resp, resume_url)
+        return self._exchange_code_for_tokens(session, auth_code, code_verifier)
+
+    def login_complete_2fa(self, session_state: dict, otp_code: str) -> dict:
+        """Complete 2FA login by submitting the OTP code.
+
+        ``session_state`` is the ``"_session_state"`` dict returned by
+        ``login_start_2fa``.
+        """
+        session: requests.Session = session_state["session"]
+        otp_resume: str = session_state["otp_resume"]
+        resume_url: str = session_state["resume_url"]
+        code_verifier: str = session_state["code_verifier"]
+
+        _LOGGER.debug("Submitting OTP to %s", otp_resume)
+        resp = self._submit_otp(session, otp_resume, otp_code)
+
+        if resp.status_code not in (302, 303):
+            raise UpdateFailed(f"2FA verification failed ({resp.status_code})")
+
+        auth_code = self._extract_auth_code(session, resp, resume_url)
+        return self._exchange_code_for_tokens(session, auth_code, code_verifier)
 
     def refresh_tokens(self, refresh_token: str) -> dict:
         """Refresh the access token using a refresh token."""
@@ -295,7 +419,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
         self.api.access_token = entry.data.get("access_token")
         self.api.refresh_token = entry.data.get("refresh_token")
 
-        # Separate API instance for PCCS (needs mobile client_id)
+        # Separate API instance for PCCS (needs PCCS client_id)
         self._pccs_api = PolestarAPI(
             client_id=PCCS_CLIENT_ID,
             redirect_uri=PCCS_REDIRECT_URI,
@@ -330,31 +454,27 @@ class PolestarCoordinator(DataUpdateCoordinator):
     async def _refresh_or_relogin(self) -> None:
         """Try token refresh, fall back to full re-login for both API clients."""
         # Refresh/relogin the main (web) API — failure is fatal
-        await self._refresh_or_relogin_api(self.api, CLIENT_ID, REDIRECT_URI, SCOPE)
+        await self._refresh_or_relogin_api(self.api)
         self._update_stored_tokens()
-        # Refresh/relogin the PCCS (mobile) API — failure is non-fatal
-        # (re-login requires 2FA which can't be done in background)
-        try:
-            await self._refresh_or_relogin_api(
-                self._pccs_api,
-                PCCS_CLIENT_ID,
-                PCCS_REDIRECT_URI,
-                PCCS_SCOPE,
-                acr_values=PCCS_ACR_VALUES,
-            )
-        except Exception:
-            _LOGGER.warning(
-                "PCCS token refresh failed; PCCS sensors will be unavailable "
-                "until the integration is reconfigured"
-            )
+        # Refresh the PCCS API — only try token refresh, not
+        # full re-login (which requires 2FA and can't be done in background).
+        if self._pccs_api.refresh_token:
+            try:
+                await self.hass.async_add_executor_job(
+                    self._pccs_api.refresh_tokens, self._pccs_api.refresh_token
+                )
+            except Exception:
+                _LOGGER.warning(
+                    "PCCS token refresh failed; PCCS sensors will be unavailable "
+                    "until the integration is reconfigured",
+                    exc_info=True,
+                )
         self._update_stored_tokens()
 
     async def _refresh_or_relogin_api(
         self,
         api: PolestarAPI,
-        client_id: str,
-        redirect_uri: str,
-        scope: str,
+        scope: str = SCOPE,
         acr_values: str | None = None,
     ) -> None:
         """Try token refresh, fall back to full re-login for a single API client."""
@@ -363,7 +483,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 await self.hass.async_add_executor_job(api.refresh_tokens, api.refresh_token)
                 return
             except Exception:
-                _LOGGER.debug("Refresh token failed for %s, doing full re-login", client_id)
+                _LOGGER.debug("Refresh token failed for %s, doing full re-login", api.client_id)
 
         # Full re-login
         try:
@@ -371,8 +491,6 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 api.login,
                 self._email,
                 self._password,
-                client_id,
-                redirect_uri,
                 scope,
                 acr_values,
             )

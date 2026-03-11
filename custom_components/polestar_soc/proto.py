@@ -1,7 +1,7 @@
 """Minimal protobuf wire-format helpers.
 
-Shared encoding/decoding utilities for gRPC clients that communicate
-without compiled .proto stubs.  Both pccs.py and cep.py import from here.
+Shared encoding/decoding utilities for gRPC clients (pccs.py and cep.py)
+using manual protobuf wire-format encoding instead of compiled .proto stubs.
 
 Wire types: 0=varint, 1=fixed64, 2=length-delimited, 5=fixed32
 """

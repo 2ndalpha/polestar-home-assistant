@@ -15,7 +15,7 @@ CLIENT_ID = "l3oopkc_10"
 REDIRECT_URI = "https://www.polestar.com/sign-in-callback"
 SCOPE = "openid profile email customer:attributes"
 
-# Mobile app client — used for PCCS gRPC (requires broader scope + 2SV)
+# PCCS client — used for PCCS gRPC (requires broader scope + 2SV)
 PCCS_CLIENT_ID = "lp8dyrd_10"
 PCCS_REDIRECT_URI = "polestar-explore://explore.polestar.com"
 PCCS_SCOPE = "openid profile email customer:attributes customer:attributes:write"
