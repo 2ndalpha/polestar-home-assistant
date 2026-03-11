@@ -24,10 +24,13 @@ CLIMATE_PAYLOAD = bytes.fromhex(
     "10021800300348005000580060006800"
 )
 
-# Battery: SOC=76.0, charging_power=2.9, range=230, charging_status=2
+# Battery: SOC=76.0, avg_consumption=2.9, range=230km/140mi,
+# charger_connection=2(DISCONNECTED), charging_status=2(IDLE),
+# est_charging_time=0, charging_type=1, charger_power_status=1, field28=5
 BATTERY_PAYLOAD = bytes.fromhex(
-    "121159534d594b4541453152423030303030311a2c0a0c08b0dcb6cd0610808c8d9e02"
+    "121159534d594b4541453152423030303030311a350a0c08b0dcb6cd0610808c8d9e02"
     "11000000000000534019333333333333074020e601280030023802408c01"
+    "880101d00101e00105"
 )
 
 TEST_VIN = "YSMYKEAE1RB000001"
@@ -89,15 +92,32 @@ class TestParseBatteryResponse:
         result = _parse_battery_response(BATTERY_PAYLOAD)
         assert result["soc"] == pytest.approx(76.0)
         assert result["estimated_range_km"] == 230
-        assert result["charging_power_kw"] == pytest.approx(2.9, abs=0.1)
-        assert result["charging_status"] == 2
+        assert result["avg_energy_consumption_kwh_per_100km"] == pytest.approx(2.9, abs=0.1)
+        assert result["charger_connection_status"] == 2  # DISCONNECTED
+        assert result["charging_status"] == 2  # IDLE (from field 7)
+        assert result["estimated_charging_time_minutes"] is None  # field 5 = 0
+        assert result["estimated_range_miles"] == 140
+        assert result["charging_power_watts"] is None  # field 10 not in payload
+
+    def test_raw_fields(self):
+        result = _parse_battery_response(BATTERY_PAYLOAD)
+        raw = result["raw_fields"]
+        assert set(raw.keys()) == {5, 7, 8, 17, 26, 28}
+        assert raw[5] == 0   # estimated_charging_time_to_full_minutes
+        assert raw[7] == 2   # charging_status (IDLE)
+        assert raw[8] == 140  # estimated_distance_to_empty_miles
+        assert raw[17] == 1  # charging_type
+        assert raw[26] == 1  # charger_power_status
+        assert raw[28] == 5  # unknown CEP-specific field
 
     def test_empty_response(self):
         result = _parse_battery_response(b"")
         assert result["soc"] is None
         assert result["estimated_range_km"] is None
         assert result["charging_status"] is None
-        assert result["charging_power_kw"] is None
+        assert result["charger_connection_status"] is None
+        assert result["charging_power_watts"] is None
+        assert result["raw_fields"] == {}
 
     def test_two_level_decode(self):
         """Verify outer envelope field 3 contains battery state."""
@@ -116,6 +136,7 @@ class TestParseBatteryResponse:
         result = _parse_battery_response(data)
         assert result["soc"] is None
         assert result["estimated_range_km"] is None
+        assert result["raw_fields"] == {}
 
 
 class TestFormatClimateStatus:

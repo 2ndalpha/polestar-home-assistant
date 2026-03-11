@@ -36,6 +36,9 @@ _METHOD_GET_CLIMATE = (
 )
 _METHOD_GET_BATTERY = "/services.vehiclestates.battery.BatteryService/GetLatestBattery"
 
+# BatteryState field numbers captured in raw_fields for debugging.
+_RAW_BATTERY_FIELD_NUMBERS = (5, 7, 8, 17, 26, 28)
+
 
 # ---------------------------------------------------------------------------
 # Request builders
@@ -75,27 +78,21 @@ def _parse_climate_response(data: bytes) -> dict:
 
     Two-level decode: outer envelope has field 3 = state sub-message.
     """
+    empty = {
+        "status": None,
+        "driver_seat_heating": None,
+        "passenger_seat_heating": None,
+        "rear_left_seat_heating": None,
+        "rear_right_seat_heating": None,
+        "steering_wheel_heating": None,
+    }
     if not data:
-        return {
-            "status": None,
-            "driver_seat_heating": None,
-            "passenger_seat_heating": None,
-            "rear_left_seat_heating": None,
-            "rear_right_seat_heating": None,
-            "steering_wheel_heating": None,
-        }
+        return empty
 
     outer = _decode_message(data)
     state = _get_submessage(outer, 3)
     if state is None:
-        return {
-            "status": None,
-            "driver_seat_heating": None,
-            "passenger_seat_heating": None,
-            "rear_left_seat_heating": None,
-            "rear_right_seat_heating": None,
-            "steering_wheel_heating": None,
-        }
+        return empty
 
     return {
         "status": _format_climate_status(_get_int(state, 2, 0)),
@@ -111,31 +108,55 @@ def _parse_battery_response(data: bytes) -> dict:
     """Parse GetLatestBattery response.
 
     Two-level decode: outer envelope has field 3 = battery state sub-message.
-    SOC and charging_power are IEEE 754 doubles (wire type 1 / fixed64).
+
+    Field mapping (BatteryState proto):
+        field 2:  battery_charge_level_percentage (double)
+        field 3:  average_energy_consumption_kwh_per_100_km (double)
+        field 4:  estimated_distance_to_empty_km (varint)
+        field 5:  estimated_charging_time_to_full_minutes (varint)
+        field 6:  charger_connection_status (enum: 1=CONNECTED, 2=DISCONNECTED, 3=FAULT)
+        field 7:  charging_status (enum: 1=CHARGING, 2=IDLE, 3=SCHEDULED, ...)
+        field 8:  estimated_distance_to_empty_miles (varint)
+        field 10: charging_power_watts (varint)
+        field 17: charging_type (enum)
+        field 26: charger_power_status (enum)
+        field 28: unknown (CEP-specific?)
     """
+    empty = {
+        "soc": None,
+        "estimated_range_km": None,
+        "charger_connection_status": None,
+        "charging_status": None,
+        "avg_energy_consumption_kwh_per_100km": None,
+        "estimated_charging_time_minutes": None,
+        "estimated_range_miles": None,
+        "charging_power_watts": None,
+        "raw_fields": {},
+    }
     if not data:
-        return {
-            "soc": None,
-            "estimated_range_km": None,
-            "charging_status": None,
-            "charging_power_kw": None,
-        }
+        return empty
 
     outer = _decode_message(data)
     state = _get_submessage(outer, 3)
     if state is None:
-        return {
-            "soc": None,
-            "estimated_range_km": None,
-            "charging_status": None,
-            "charging_power_kw": None,
-        }
+        return empty
+
+    raw_fields = {}
+    for fn in _RAW_BATTERY_FIELD_NUMBERS:
+        vals = state.get(fn)
+        if vals is not None:
+            raw_fields[fn] = vals[0]
 
     return {
         "soc": _get_double(state, 2),
         "estimated_range_km": _get_int(state, 4) or None,
-        "charging_status": _get_int(state, 6) or None,
-        "charging_power_kw": _get_double(state, 3),
+        "charger_connection_status": _get_int(state, 6) or None,
+        "charging_status": _get_int(state, 7) or None,
+        "avg_energy_consumption_kwh_per_100km": _get_double(state, 3),
+        "estimated_charging_time_minutes": _get_int(state, 5) or None,
+        "estimated_range_miles": _get_int(state, 8) or None,
+        "charging_power_watts": _get_int(state, 10) or None,
+        "raw_fields": raw_fields,
     }
 
 

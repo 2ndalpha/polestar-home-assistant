@@ -60,8 +60,13 @@ def sample_cep_battery():
     return {
         "soc": 76.0,
         "estimated_range_km": 230,
+        "charger_connection_status": 2,
         "charging_status": 2,
-        "charging_power_kw": 2.9,
+        "avg_energy_consumption_kwh_per_100km": 2.9,
+        "estimated_charging_time_minutes": None,
+        "estimated_range_miles": 140,
+        "charging_power_watts": None,
+        "raw_fields": {},
     }
 
 

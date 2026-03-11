@@ -291,8 +291,8 @@ class TestParseChargeTimerResponse:
         assert result["is_departure_active"] is False
 
     def test_no_timer_in_envelope(self):
-        # Envelope with id and vin but no timer sub-message in field 3
-        data = _encode_field_bytes(1, b"some-id") + _encode_field_bytes(2, b"VIN123")
+        # Envelope with only a timestamp in field 3 but no timer in field 1
+        data = _encode_field_varint(3, 1773247754487)
         result = _parse_charge_timer_response(data)
         assert result["start_hour"] is None
         assert result["end_hour"] is None
@@ -302,10 +302,26 @@ class TestParseChargeTimerResponse:
         start = _build_time_of_day(22, 30)
         end = _build_time_of_day(6, 0)
         timer = _encode_field_bytes(1, start) + _encode_field_bytes(2, end)
-        # Wrap in response envelope: field 3 = globalChargeTimer
-        data = _encode_field_bytes(3, timer)
+        # Wrap in response envelope: field 1 = globalChargeTimer
+        data = _encode_field_bytes(1, timer)
         result = _parse_charge_timer_response(data)
         assert result["start_hour"] == 22
         assert result["start_min"] == 30
         assert result["end_hour"] == 6
         assert result["end_min"] == 0
+        assert result["is_departure_active"] is False
+
+    def test_with_timezone_in_time_of_day(self):
+        """TimeOfDay may include a timezone sub-message in field 3."""
+        # Build TimeOfDay with extra field 3 (timezone offset sub-message)
+        tz_submsg = _encode_field_varint(1, 120)  # UTC+2 offset in minutes
+        start = _build_time_of_day(23, 15) + _encode_field_bytes(3, tz_submsg)
+        end = _build_time_of_day(7, 0) + _encode_field_bytes(3, tz_submsg)
+        timer = _encode_field_bytes(1, start) + _encode_field_bytes(2, end)
+        data = _encode_field_bytes(1, timer)
+        result = _parse_charge_timer_response(data)
+        assert result["start_hour"] == 23
+        assert result["start_min"] == 15
+        assert result["end_hour"] == 7
+        assert result["end_min"] == 0
+        assert result["is_departure_active"] is False

@@ -417,7 +417,8 @@ class PolestarCoordinator(DataUpdateCoordinator):
         self.api.access_token = entry.data.get("access_token")
         self.api.refresh_token = entry.data.get("refresh_token")
 
-        # Separate API instance for PCCS (needs PCCS client_id)
+        # PCCS API instance kept for potential future write operations
+        # that may require the PCCS token with 2FA scope.
         self._pccs_api = PolestarAPI(
             client_id=PCCS_CLIENT_ID,
             redirect_uri=PCCS_REDIRECT_URI,
@@ -425,7 +426,8 @@ class PolestarCoordinator(DataUpdateCoordinator):
         self._pccs_api.access_token = entry.data.get("pccs_access_token")
         self._pccs_api.refresh_token = entry.data.get("pccs_refresh_token")
 
-        self.pccs = PccsClient(self._pccs_api.access_token or "")
+        # PCCS chronos services (charge timer, target SOC) accept the web token
+        self.pccs = PccsClient(self.api.access_token or "")
         self.cep = CepClient(self.api.access_token or "")
         self._email: str = entry.data["email"]
         self._password: str = entry.data["password"]
@@ -578,8 +580,8 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 "pccs_refresh_token": self._pccs_api.refresh_token,
             },
         )
-        # Keep gRPC client tokens in sync
-        self.pccs.access_token = self._pccs_api.access_token or ""
+        # Keep gRPC client tokens in sync (both use web token)
+        self.pccs.access_token = self.api.access_token or ""
         self.cep.access_token = self.api.access_token or ""
 
     def close(self) -> None:

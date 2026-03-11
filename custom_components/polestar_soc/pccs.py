@@ -43,8 +43,7 @@ _METHOD_SET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/SetGlobalChargeTimer"
 # Protobuf message builders
 # ---------------------------------------------------------------------------
 # All PCCS requests wrap a ChronosRequest in field 1.
-# All PCCS responses wrap an envelope: field 1=id, field 2=vin, field 3=data.
-# See docstrings on _parse_*_response() for detailed field layouts.
+# Response envelope layouts vary by RPC — see docstrings on _parse_*_response().
 
 
 def _build_chronos_request(vin: str) -> bytes:
@@ -146,47 +145,32 @@ def _parse_target_soc_response(data: bytes) -> dict:
 def _parse_charge_timer_response(data: bytes) -> dict:
     """Parse GetGlobalChargeTimerStream / SetGlobalChargeTimer response.
 
-    Response structure (GetGlobalChargeTimerResponse):
-        field 1: id (string)                     — echoed request ID
-        field 2: vin (string)                    — echoed VIN
-        field 3: globalChargeTimer (message)     — current timer data
-        field 4: pendingGlobalChargeTimer (message)
+    Response structure (verified against live API 2026-03-11):
+        field 1: globalChargeTimer (message)     — current timer data
+        field 3: updatedAt (varint)              — server timestamp
 
     GlobalChargeTimer sub-message:
-        field 1: startTime (TimeOfDay message)
-        field 2: endTime (TimeOfDay message)
-        field 3: departureTimeHours (int32)
-        field 4: departureTimeMinutes (int32)
-        field 5: isDepartureTimeActive (bool)
-        field 6: isLocationChargeTimerActive (bool)
+        field 1: startTime (TimeOfDay message)   — {1: hours, 2: minutes, 3: tz}
+        field 2: endTime (TimeOfDay message)     — {1: hours, 2: minutes, 3: tz}
+        field 3: isDepartureTimeActive (bool)
+        field 4: metadata (message)              — {1: id, 2: timestamp, 3: source}
     """
+    empty = {
+        "start_hour": None,
+        "start_min": None,
+        "end_hour": None,
+        "end_min": None,
+        "is_departure_active": False,
+    }
     if not data:
-        return {
-            "start_hour": None,
-            "start_min": None,
-            "end_hour": None,
-            "end_min": None,
-            "departure_hour": None,
-            "departure_min": None,
-            "is_departure_active": False,
-            "is_location_timer_active": False,
-        }
+        return empty
 
     envelope = _decode_message(data)
 
-    # Extract GlobalChargeTimer sub-message from field 3 of the envelope
-    timer = _get_submessage(envelope, 3)
+    # GlobalChargeTimer is in field 1 of the response envelope
+    timer = _get_submessage(envelope, 1)
     if not timer:
-        return {
-            "start_hour": None,
-            "start_min": None,
-            "end_hour": None,
-            "end_min": None,
-            "departure_hour": None,
-            "departure_min": None,
-            "is_departure_active": False,
-            "is_location_timer_active": False,
-        }
+        return empty
 
     start_time = _get_submessage(timer, 1)
     end_time = _get_submessage(timer, 2)
@@ -196,10 +180,7 @@ def _parse_charge_timer_response(data: bytes) -> dict:
         "start_min": _get_int(start_time, 2) if start_time else None,
         "end_hour": _get_int(end_time, 1) if end_time else None,
         "end_min": _get_int(end_time, 2) if end_time else None,
-        "departure_hour": _get_int(timer, 3, 0) or None,
-        "departure_min": _get_int(timer, 4, 0) or None,
-        "is_departure_active": _get_bool(timer, 5),
-        "is_location_timer_active": _get_bool(timer, 6),
+        "is_departure_active": _get_bool(timer, 3),
     }
 
 
