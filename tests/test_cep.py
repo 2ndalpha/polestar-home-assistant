@@ -103,8 +103,8 @@ class TestParseBatteryResponse:
         result = _parse_battery_response(BATTERY_PAYLOAD)
         raw = result["raw_fields"]
         assert set(raw.keys()) == {5, 7, 8, 17, 26, 28}
-        assert raw[5] == 0   # estimated_charging_time_to_full_minutes
-        assert raw[7] == 2   # charging_status (IDLE)
+        assert raw[5] == 0  # estimated_charging_time_to_full_minutes
+        assert raw[7] == 2  # charging_status (IDLE)
         assert raw[8] == 140  # estimated_distance_to_empty_miles
         assert raw[17] == 1  # charging_type
         assert raw[26] == 1  # charger_power_status
