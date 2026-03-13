@@ -89,6 +89,50 @@
       "location": {
         "name": "Location"
       }
+    },
+    "binary_sensor": {
+      "central_lock": {
+        "name": "Central lock"
+      },
+      "front_left_door": {
+        "name": "Front left door"
+      },
+      "front_right_door": {
+        "name": "Front right door"
+      },
+      "rear_left_door": {
+        "name": "Rear left door"
+      },
+      "rear_right_door": {
+        "name": "Rear right door"
+      },
+      "front_left_window": {
+        "name": "Front left window"
+      },
+      "front_right_window": {
+        "name": "Front right window"
+      },
+      "rear_left_window": {
+        "name": "Rear left window"
+      },
+      "rear_right_window": {
+        "name": "Rear right window"
+      },
+      "hood": {
+        "name": "Hood"
+      },
+      "tailgate": {
+        "name": "Tailgate"
+      },
+      "tank_lid": {
+        "name": "Tank lid"
+      },
+      "sunroof": {
+        "name": "Sunroof"
+      },
+      "alarm": {
+        "name": "Alarm"
+      }
     }
   }
 }

@@ -35,6 +35,7 @@ _METHOD_GET_CLIMATE = (
     ".ParkingClimatizationService/GetLatestParkingClimatization"
 )
 _METHOD_GET_BATTERY = "/services.vehiclestates.battery.BatteryService/GetLatestBattery"
+_METHOD_GET_EXTERIOR = "/services.vehiclestates.exterior.ExteriorService/GetLatestExterior"
 _METHOD_GET_LOCATION = "/dtlinternet.DtlInternetService/GetLastKnownLocation"
 
 # BatteryState field numbers captured in raw_fields for debugging.
@@ -166,6 +167,47 @@ def _parse_battery_response(data: bytes) -> dict:
     }
 
 
+# ExteriorState field numbers → dict keys
+_EXTERIOR_FIELDS: tuple[tuple[int, str], ...] = (
+    (2, "central_lock"),
+    (3, "front_left_door"),
+    (4, "front_right_door"),
+    (5, "rear_left_door"),
+    (6, "rear_right_door"),
+    (7, "front_left_window"),
+    (8, "front_right_window"),
+    (9, "rear_left_window"),
+    (10, "rear_right_window"),
+    (11, "hood"),
+    (12, "tailgate"),
+    (13, "tank_lid"),
+    (14, "sunroof"),
+    (15, "alarm"),
+)
+
+
+def _parse_exterior_response(data: bytes) -> dict:
+    """Parse GetLatestExterior response.
+
+    Two-level decode: outer envelope has field 3 = ExteriorState sub-message.
+    Returns raw integer enum values (0-3) for each field, or None if missing.
+    """
+    empty: dict = {key: None for _, key in _EXTERIOR_FIELDS}
+    if not data:
+        return empty
+
+    outer = _decode_message(data)
+    state = _get_submessage(outer, 3)
+    if state is None:
+        return empty
+
+    result: dict = {}
+    for field_num, key in _EXTERIOR_FIELDS:
+        val = _get_int(state, field_num)
+        result[key] = val if val else None
+    return result
+
+
 def _parse_location_response(data: bytes) -> dict:
     """Parse GetLastKnownLocation response.
 
@@ -258,6 +300,21 @@ class CepClient:
             return _parse_battery_response(response)
         except grpc.RpcError as err:
             _LOGGER.warning("CEP GetLatestBattery failed: %s", err)
+            raise
+
+    def get_exterior(self, vin: str) -> dict:
+        """Get current exterior state (lock, doors, windows, etc.)."""
+        channel = self._get_channel()
+        method = channel.unary_unary(
+            _METHOD_GET_EXTERIOR,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        try:
+            response = method(_build_vin_request(vin), metadata=self._metadata(vin), timeout=30)
+            return _parse_exterior_response(response)
+        except grpc.RpcError as err:
+            _LOGGER.warning("CEP GetLatestExterior failed: %s", err)
             raise
 
     def get_location(self, vin: str) -> dict:

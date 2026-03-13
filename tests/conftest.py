@@ -70,6 +70,27 @@ def sample_cep_battery():
     }
 
 
+@pytest.fixture
+def sample_exterior():
+    """Return a sample exterior state dict (as returned by CepClient)."""
+    return {
+        "central_lock": 2,  # LOCKED
+        "front_left_door": 2,  # CLOSED
+        "front_right_door": 2,  # CLOSED
+        "rear_left_door": 2,  # CLOSED
+        "rear_right_door": 2,  # CLOSED
+        "front_left_window": 2,  # CLOSED
+        "front_right_window": 2,  # CLOSED
+        "rear_left_window": 2,  # CLOSED
+        "rear_right_window": 2,  # CLOSED
+        "hood": 2,  # CLOSED
+        "tailgate": 2,  # CLOSED
+        "tank_lid": 2,  # CLOSED
+        "sunroof": 0,  # UNSPECIFIED (no sunroof)
+        "alarm": 1,  # IDLE
+    }
+
+
 VIN = "YSMYKEAE1RB000001"
 
 
@@ -91,6 +112,7 @@ def sample_coordinator_data(
     sample_climate,
     sample_cep_battery,
     sample_location,
+    sample_exterior,
 ):
     """Return a full coordinator data dict combining all sources."""
     vin = sample_vehicle["vin"]
@@ -103,4 +125,5 @@ def sample_coordinator_data(
         "climate": {vin: sample_climate},
         "cep_battery": {vin: sample_cep_battery},
         "location": {vin: sample_location},
+        "exterior": {vin: sample_exterior},
     }

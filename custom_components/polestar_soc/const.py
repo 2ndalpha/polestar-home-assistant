@@ -90,3 +90,23 @@ HEATING_INTENSITY_MAP: dict[int, str] = {
     2: "Medium",
     3: "High",
 }
+
+# Exterior state enums (ExteriorService)
+LOCK_STATUS_MAP: dict[int, str | None] = {
+    0: None,
+    1: "Unlocked",
+    2: "Locked",
+}
+
+OPEN_STATUS_MAP: dict[int, str | None] = {
+    0: None,
+    1: "Open",
+    2: "Closed",
+    3: "Ajar",
+}
+
+ALARM_STATUS_MAP: dict[int, str | None] = {
+    0: None,
+    1: "Idle",
+    2: "Triggered",
+}

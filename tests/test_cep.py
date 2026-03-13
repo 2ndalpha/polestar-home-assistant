@@ -11,6 +11,7 @@ from custom_components.polestar_soc.cep import (
     _format_heating_intensity,
     _parse_battery_response,
     _parse_climate_response,
+    _parse_exterior_response,
     _parse_location_response,
 )
 from custom_components.polestar_soc.proto import (
@@ -227,3 +228,117 @@ class TestParseLocationResponse:
         assert 2 in fields
         assert 3 in fields
         assert 4 in fields
+
+
+def _build_exterior_state(field_values: dict[int, int]) -> bytes:
+    """Build an ExteriorState sub-message from {field_number: varint_value}."""
+    data = b""
+    for field_num in sorted(field_values):
+        data += _encode_field_varint(field_num, field_values[field_num])
+    return data
+
+
+def _build_exterior_payload(vin: str, field_values: dict[int, int]) -> bytes:
+    """Build a synthetic GetLatestExterior response with two-level envelope."""
+    state_bytes = _build_exterior_state(field_values)
+    # Outer envelope: field 2 = VIN, field 3 = ExteriorState sub-message
+    data = _encode_field_bytes(2, vin.encode("utf-8"))
+    data += _encode_field_bytes(3, state_bytes)
+    return data
+
+
+# All locked/closed, alarm idle
+EXTERIOR_ALL_LOCKED = _build_exterior_payload(
+    TEST_VIN,
+    {
+        2: 2,  # central_lock: LOCKED
+        3: 2,  # front_left_door: CLOSED
+        4: 2,  # front_right_door: CLOSED
+        5: 2,  # rear_left_door: CLOSED
+        6: 2,  # rear_right_door: CLOSED
+        7: 2,  # front_left_window: CLOSED
+        8: 2,  # front_right_window: CLOSED
+        9: 2,  # rear_left_window: CLOSED
+        10: 2,  # rear_right_window: CLOSED
+        11: 2,  # hood: CLOSED
+        12: 2,  # tailgate: CLOSED
+        13: 2,  # tank_lid: CLOSED
+        15: 1,  # alarm: IDLE
+    },
+)
+
+# Mixed state: unlocked, some doors open/ajar, alarm triggered
+EXTERIOR_MIXED = _build_exterior_payload(
+    TEST_VIN,
+    {
+        2: 1,  # central_lock: UNLOCKED
+        3: 1,  # front_left_door: OPEN
+        4: 3,  # front_right_door: AJAR
+        5: 2,  # rear_left_door: CLOSED
+        6: 2,  # rear_right_door: CLOSED
+        7: 1,  # front_left_window: OPEN
+        8: 2,  # front_right_window: CLOSED
+        9: 2,  # rear_left_window: CLOSED
+        10: 2,  # rear_right_window: CLOSED
+        11: 2,  # hood: CLOSED
+        12: 1,  # tailgate: OPEN
+        13: 2,  # tank_lid: CLOSED
+        14: 0,  # sunroof: UNSPECIFIED
+        15: 2,  # alarm: TRIGGERED
+    },
+)
+
+
+class TestParseExteriorResponse:
+    def test_all_locked_closed(self):
+        result = _parse_exterior_response(EXTERIOR_ALL_LOCKED)
+        assert result["central_lock"] == 2  # LOCKED
+        assert result["front_left_door"] == 2  # CLOSED
+        assert result["front_right_door"] == 2  # CLOSED
+        assert result["rear_left_door"] == 2  # CLOSED
+        assert result["rear_right_door"] == 2  # CLOSED
+        assert result["front_left_window"] == 2  # CLOSED
+        assert result["front_right_window"] == 2  # CLOSED
+        assert result["rear_left_window"] == 2  # CLOSED
+        assert result["rear_right_window"] == 2  # CLOSED
+        assert result["hood"] == 2  # CLOSED
+        assert result["tailgate"] == 2  # CLOSED
+        assert result["tank_lid"] == 2  # CLOSED
+        assert result["sunroof"] is None  # not in payload → UNSPECIFIED → None
+        assert result["alarm"] == 1  # IDLE
+
+    def test_mixed_open_ajar(self):
+        result = _parse_exterior_response(EXTERIOR_MIXED)
+        assert result["central_lock"] == 1  # UNLOCKED
+        assert result["front_left_door"] == 1  # OPEN
+        assert result["front_right_door"] == 3  # AJAR
+        assert result["rear_left_door"] == 2  # CLOSED
+        assert result["front_left_window"] == 1  # OPEN
+        assert result["front_right_window"] == 2  # CLOSED
+        assert result["tailgate"] == 1  # OPEN
+        assert result["sunroof"] is None  # UNSPECIFIED(0) → None
+        assert result["alarm"] == 2  # TRIGGERED
+
+    def test_empty_response(self):
+        result = _parse_exterior_response(b"")
+        assert result["central_lock"] is None
+        assert result["front_left_door"] is None
+        assert result["alarm"] is None
+        assert len(result) == 14  # all 14 fields present
+
+    def test_missing_state_submessage(self):
+        """Response with VIN but no field 3 returns all None."""
+        data = _encode_field_bytes(2, TEST_VIN.encode("utf-8"))
+        result = _parse_exterior_response(data)
+        assert result["central_lock"] is None
+        assert result["front_left_door"] is None
+        assert result["alarm"] is None
+
+    def test_two_level_envelope(self):
+        """Verify outer envelope has field 2=VIN and field 3=ExteriorState."""
+        outer = _decode_message(EXTERIOR_ALL_LOCKED)
+        assert outer[2][0] == TEST_VIN.encode("utf-8")
+        assert isinstance(outer[3][0], (bytes, bytearray))
+        state = _get_submessage(outer, 3)
+        assert state is not None
+        assert 2 in state  # central_lock field

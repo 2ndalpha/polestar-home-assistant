@@ -20,6 +20,33 @@ Custom Home Assistant integration for Polestar vehicles. Provides battery, charg
 | Rear Right Seat Heating | — | Off / Low / Medium / High |
 | Steering Wheel Heating | — | Off / Low / Medium / High |
 
+### Device Tracker
+
+| Entity | Description |
+|--------|-------------|
+| Location | Vehicle GPS position with timestamp |
+
+### Binary Sensors
+
+| Sensor | Device Class | Description |
+|--------|-------------|-------------|
+| Central Lock | Lock | Locked / Unlocked |
+| Front Left Door | Door | Open / Closed / Ajar |
+| Front Right Door | Door | Open / Closed / Ajar |
+| Rear Left Door | Door | Open / Closed / Ajar |
+| Rear Right Door | Door | Open / Closed / Ajar |
+| Front Left Window* | Window | Open / Closed |
+| Front Right Window* | Window | Open / Closed |
+| Rear Left Window* | Window | Open / Closed |
+| Rear Right Window* | Window | Open / Closed |
+| Hood* | Opening | Open / Closed |
+| Tailgate* | Opening | Open / Closed |
+| Tank Lid* | Opening | Open / Closed |
+| Sunroof* | Opening | Open / Closed |
+| Alarm* | Safety | Idle / Triggered |
+
+*Disabled by default — enable in the entity registry.
+
 ### Controls
 
 | Entity | Type | Description |
