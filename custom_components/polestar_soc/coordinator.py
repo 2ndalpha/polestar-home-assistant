@@ -515,6 +515,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
                     "charge_timer": {},
                     "climate": {},
                     "cep_battery": {},
+                    "location": {},
                 }
 
             vins = [v["vin"] for v in vehicles]
@@ -543,9 +544,10 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 except Exception:
                     _LOGGER.debug("Failed to fetch PCCS charge timer for %s", vin)
 
-            # Fetch CEP data (climate status + battery) per VIN
+            # Fetch CEP data (climate status + battery + location) per VIN
             climate_by_vin: dict = {}
             cep_battery_by_vin: dict = {}
+            location_by_vin: dict = {}
             for vin in vins:
                 try:
                     climate_by_vin[vin] = self.cep.get_parking_climatization(vin)
@@ -555,6 +557,10 @@ class PolestarCoordinator(DataUpdateCoordinator):
                     cep_battery_by_vin[vin] = self.cep.get_battery(vin)
                 except Exception:
                     _LOGGER.debug("Failed to fetch CEP battery for %s", vin)
+                try:
+                    location_by_vin[vin] = self.cep.get_location(vin)
+                except Exception:
+                    _LOGGER.debug("Failed to fetch CEP location for %s", vin)
 
             return {
                 "vehicles": vehicles,
@@ -564,6 +570,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 "charge_timer": charge_timer_by_vin,
                 "climate": climate_by_vin,
                 "cep_battery": cep_battery_by_vin,
+                "location": location_by_vin,
             }
 
         return await self.hass.async_add_executor_job(_do_fetch)

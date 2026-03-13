@@ -5,15 +5,18 @@ import struct
 import pytest
 
 from custom_components.polestar_soc.cep import (
+    _build_location_request,
     _build_vin_request,
     _format_climate_status,
     _format_heating_intensity,
     _parse_battery_response,
     _parse_climate_response,
+    _parse_location_response,
 )
 from custom_components.polestar_soc.proto import (
     _decode_message,
     _encode_field_bytes,
+    _encode_field_varint,
     _get_submessage,
 )
 
@@ -160,3 +163,67 @@ class TestFormatHeatingIntensity:
     def test_unknown_value(self):
         result = _format_heating_intensity(42)
         assert result == "Unknown (42)"
+
+
+def _build_location_payload(
+    vin: str, longitude: float, latitude: float, timestamp_ms: int
+) -> bytes:
+    """Build a synthetic GetLastKnownLocation response payload."""
+    # field 1 = VIN (string), field 2 = longitude (double/fixed64),
+    # field 3 = latitude (double/fixed64), field 4 = timestamp_ms (varint)
+    data = _encode_field_bytes(1, vin.encode("utf-8"))
+    # Wire type 1 (fixed64) for doubles: tag = (field_number << 3) | 1
+    data += struct.pack("<B", (2 << 3) | 1) + struct.pack("<d", longitude)
+    data += struct.pack("<B", (3 << 3) | 1) + struct.pack("<d", latitude)
+    data += _encode_field_varint(4, timestamp_ms)
+    return data
+
+
+LOCATION_PAYLOAD = _build_location_payload(
+    TEST_VIN, longitude=18.068581, latitude=59.329323, timestamp_ms=1772990058845
+)
+
+
+class TestBuildLocationRequest:
+    def test_produces_field_1_string(self):
+        result = _build_location_request(TEST_VIN)
+        fields = _decode_message(result)
+        assert 1 in fields
+        assert fields[1][0] == TEST_VIN.encode("utf-8")
+        assert 2 not in fields
+
+    def test_roundtrip_vin(self):
+        result = _build_location_request(TEST_VIN)
+        expected = _encode_field_bytes(1, TEST_VIN.encode("utf-8"))
+        assert result == expected
+
+
+class TestParseLocationResponse:
+    def test_parsed_response(self):
+        result = _parse_location_response(LOCATION_PAYLOAD)
+        assert result["latitude"] == pytest.approx(59.329323)
+        assert result["longitude"] == pytest.approx(18.068581)
+        assert result["timestamp_ms"] == 1772990058845
+
+    def test_empty_response(self):
+        result = _parse_location_response(b"")
+        assert result["latitude"] is None
+        assert result["longitude"] is None
+        assert result["timestamp_ms"] is None
+
+    def test_missing_coordinates(self):
+        """Response with only VIN returns None values."""
+        data = _encode_field_bytes(1, TEST_VIN.encode("utf-8"))
+        result = _parse_location_response(data)
+        assert result["latitude"] is None
+        assert result["longitude"] is None
+        assert result["timestamp_ms"] is None
+
+    def test_top_level_decode(self):
+        """Verify location fields are at top level (no envelope nesting)."""
+        fields = _decode_message(LOCATION_PAYLOAD)
+        assert fields[1][0] == TEST_VIN.encode("utf-8")
+        # Fields 2 and 3 are fixed64 (doubles stored as uint64)
+        assert 2 in fields
+        assert 3 in fields
+        assert 4 in fields

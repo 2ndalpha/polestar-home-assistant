@@ -9,7 +9,12 @@ from homeassistant.core import HomeAssistant
 from .const import DOMAIN
 from .coordinator import PolestarCoordinator
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NUMBER, Platform.TIME]
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.NUMBER,
+    Platform.TIME,
+    Platform.DEVICE_TRACKER,
+]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

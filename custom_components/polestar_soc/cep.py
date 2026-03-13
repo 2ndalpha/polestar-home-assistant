@@ -35,6 +35,7 @@ _METHOD_GET_CLIMATE = (
     ".ParkingClimatizationService/GetLatestParkingClimatization"
 )
 _METHOD_GET_BATTERY = "/services.vehiclestates.battery.BatteryService/GetLatestBattery"
+_METHOD_GET_LOCATION = "/dtlinternet.DtlInternetService/GetLastKnownLocation"
 
 # BatteryState field numbers captured in raw_fields for debugging.
 _RAW_BATTERY_FIELD_NUMBERS = (5, 7, 8, 17, 26, 28)
@@ -48,6 +49,11 @@ _RAW_BATTERY_FIELD_NUMBERS = (5, 7, 8, 17, 26, 28)
 def _build_vin_request(vin: str) -> bytes:
     """Build a request with VIN as field 2 (string)."""
     return _encode_field_bytes(2, vin.encode("utf-8"))
+
+
+def _build_location_request(vin: str) -> bytes:
+    """Build a request with VIN as field 1 (DtlInternetService uses field 1, not field 2)."""
+    return _encode_field_bytes(1, vin.encode("utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +166,33 @@ def _parse_battery_response(data: bytes) -> dict:
     }
 
 
+def _parse_location_response(data: bytes) -> dict:
+    """Parse GetLastKnownLocation response.
+
+    Unlike climate/battery, location fields are at the top level (no envelope).
+    Field mapping:
+        field 1 (string): VIN
+        field 2 (double): longitude
+        field 3 (double): latitude
+        field 4 (varint): timestamp_ms (milliseconds since epoch)
+    """
+    empty: dict = {"latitude": None, "longitude": None, "timestamp_ms": None}
+    if not data:
+        return empty
+
+    fields = _decode_message(data)
+    latitude = _get_double(fields, 3)
+    longitude = _get_double(fields, 2)
+    if latitude is None or longitude is None:
+        return empty
+
+    return {
+        "latitude": latitude,
+        "longitude": longitude,
+        "timestamp_ms": _get_int(fields, 4) or None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # CepClient
 # ---------------------------------------------------------------------------
@@ -225,4 +258,21 @@ class CepClient:
             return _parse_battery_response(response)
         except grpc.RpcError as err:
             _LOGGER.warning("CEP GetLatestBattery failed: %s", err)
+            raise
+
+    def get_location(self, vin: str) -> dict:
+        """Get last known vehicle location."""
+        channel = self._get_channel()
+        method = channel.unary_unary(
+            _METHOD_GET_LOCATION,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        try:
+            response = method(
+                _build_location_request(vin), metadata=self._metadata(vin), timeout=30
+            )
+            return _parse_location_response(response)
+        except grpc.RpcError as err:
+            _LOGGER.warning("CEP GetLastKnownLocation failed: %s", err)
             raise

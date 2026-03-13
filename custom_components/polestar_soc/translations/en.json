@@ -84,6 +84,11 @@
       "charging_end_time": {
         "name": "Charging end time"
       }
+    },
+    "device_tracker": {
+      "location": {
+        "name": "Location"
+      }
     }
   }
 }

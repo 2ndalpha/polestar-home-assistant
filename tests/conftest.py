@@ -74,8 +74,23 @@ VIN = "YSMYKEAE1RB000001"
 
 
 @pytest.fixture
+def sample_location():
+    """Return a sample location dict (as returned by CepClient)."""
+    return {
+        "latitude": 59.329323,
+        "longitude": 18.068581,
+        "timestamp_ms": 1772990058845,
+    }
+
+
+@pytest.fixture
 def sample_coordinator_data(
-    sample_vehicle, sample_battery, sample_odometer, sample_climate, sample_cep_battery
+    sample_vehicle,
+    sample_battery,
+    sample_odometer,
+    sample_climate,
+    sample_cep_battery,
+    sample_location,
 ):
     """Return a full coordinator data dict combining all sources."""
     vin = sample_vehicle["vin"]
@@ -87,4 +102,5 @@ def sample_coordinator_data(
         "charge_timer": {},
         "climate": {vin: sample_climate},
         "cep_battery": {vin: sample_cep_battery},
+        "location": {vin: sample_location},
     }
