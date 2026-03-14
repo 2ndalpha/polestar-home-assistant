@@ -137,6 +137,54 @@ def _get_double(fields: dict[int, list], field_number: int) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# Shared response parsers
+# ---------------------------------------------------------------------------
+
+
+def _parse_invocation_response(data: bytes) -> dict:
+    """Parse an InvocationResponse from a command response wrapper.
+
+    Used by both PCCS and CEP InvocationService commands.
+    The wrapper message (e.g. ClimatizationResponse, WindowControlResponse)
+    has field 1 = InvocationResponse sub-message.
+
+    InvocationResponse:
+        field 1: id (string)
+        field 2: vin (string)
+        field 3: status (varint enum)
+        field 4: message (string)
+        field 5: timestamp (int64)
+    """
+    empty = {"id": "", "vin": "", "status": 0, "message": ""}
+    if not data:
+        return empty
+
+    outer = _decode_message(data)
+    inner = _get_submessage(outer, 1)
+    if inner is None:
+        return empty
+
+    id_val = inner.get(1, [b""])[0]
+    if isinstance(id_val, bytes):
+        id_val = id_val.decode("utf-8", errors="replace")
+
+    vin_val = inner.get(2, [b""])[0]
+    if isinstance(vin_val, bytes):
+        vin_val = vin_val.decode("utf-8", errors="replace")
+
+    msg_val = inner.get(4, [b""])[0]
+    if isinstance(msg_val, bytes):
+        msg_val = msg_val.decode("utf-8", errors="replace")
+
+    return {
+        "id": id_val,
+        "vin": vin_val,
+        "status": _get_int(inner, 3, 0),
+        "message": msg_val,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Raw serializer/deserializer for grpc channel methods
 # ---------------------------------------------------------------------------
 

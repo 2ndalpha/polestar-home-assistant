@@ -30,6 +30,7 @@ from .proto import (
     _get_submessage,
     _identity_deserialize,
     _identity_serialize,
+    _parse_invocation_response,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -89,48 +90,6 @@ def _build_window_control_request(vin: str, control_type: int) -> bytes:
     msg = _encode_field_bytes(1, _build_cep_invocation_request(vin))
     msg += _encode_field_varint(2, control_type)
     return msg
-
-
-def _parse_invocation_response(data: bytes) -> dict:
-    """Parse a CEP InvocationResponse from a command response.
-
-    Response wrapper (e.g. WindowControlResponse):
-        field 1: InvocationResponse (message)
-
-    InvocationResponse:
-        field 1: id (string)
-        field 2: vin (string)
-        field 3: status (varint enum)
-        field 4: message (string)
-        field 5: timestamp (int64)
-    """
-    empty = {"id": "", "vin": "", "status": 0, "message": ""}
-    if not data:
-        return empty
-
-    outer = _decode_message(data)
-    inner = _get_submessage(outer, 1)
-    if inner is None:
-        return empty
-
-    id_val = inner.get(1, [b""])[0]
-    if isinstance(id_val, bytes):
-        id_val = id_val.decode("utf-8", errors="replace")
-
-    vin_val = inner.get(2, [b""])[0]
-    if isinstance(vin_val, bytes):
-        vin_val = vin_val.decode("utf-8", errors="replace")
-
-    msg_val = inner.get(4, [b""])[0]
-    if isinstance(msg_val, bytes):
-        msg_val = msg_val.decode("utf-8", errors="replace")
-
-    return {
-        "id": id_val,
-        "vin": vin_val,
-        "status": _get_int(inner, 3, 0),
-        "message": msg_val,
-    }
 
 
 # ---------------------------------------------------------------------------
