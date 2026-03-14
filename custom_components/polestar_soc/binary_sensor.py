@@ -16,7 +16,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ALARM_STATUS_MAP, DOMAIN, OPEN_STATUS_MAP
+from .const import ALARM_STATUS_MAP, DOMAIN, OPEN_STATUS_MAP, UNAVAILABLE_REASON_MAP
 from .coordinator import PolestarCoordinator
 
 
@@ -25,6 +25,7 @@ class PolestarBinarySensorDescription(BinarySensorEntityDescription):
     """Describe a Polestar binary sensor."""
 
     is_on_fn: Callable[[dict, str], bool | None]
+    extra_attrs_fn: Callable[[dict, str], dict | None] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -58,11 +59,41 @@ def _alarm_is_on(data: dict, vin: str) -> bool | None:
     return val == 2  # TRIGGERED(2)
 
 
+def _availability_is_on(data: dict, vin: str) -> bool | None:
+    """Vehicle available: True=Connected, False=Disconnected, None=Unknown."""
+    availability = data.get("availability", {}).get(vin)
+    if availability is None:
+        return None
+    status = availability.get("availability_status")
+    if status == 1:
+        return True  # AVAILABLE
+    if status == 2:
+        return False  # UNAVAILABLE
+    return None  # UNSPECIFIED or missing
+
+
+def _availability_extra_attrs(data: dict, vin: str) -> dict | None:
+    """Return unavailable_reason as an extra attribute."""
+    availability = data.get("availability", {}).get(vin)
+    if availability is None:
+        return None
+    reason_val = availability.get("unavailable_reason")
+    reason = UNAVAILABLE_REASON_MAP.get(reason_val) if reason_val else None
+    return {"unavailable_reason": reason}
+
+
 # ---------------------------------------------------------------------------
 # Entity descriptions
 # ---------------------------------------------------------------------------
 
 BINARY_SENSOR_DESCRIPTIONS: tuple[PolestarBinarySensorDescription, ...] = (
+    PolestarBinarySensorDescription(
+        key="vehicle_available",
+        translation_key="vehicle_available",
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
+        is_on_fn=_availability_is_on,
+        extra_attrs_fn=_availability_extra_attrs,
+    ),
     PolestarBinarySensorDescription(
         key="front_left_door",
         translation_key="front_left_door",
@@ -228,6 +259,8 @@ class PolestarBinarySensor(CoordinatorEntity[PolestarCoordinator], BinarySensorE
         data = self.coordinator.data
         if not data:
             return None
+        if self.entity_description.extra_attrs_fn is not None:
+            return self.entity_description.extra_attrs_fn(data, self._vin)
         exterior = data.get("exterior", {}).get(self._vin)
         if exterior is None:
             return None

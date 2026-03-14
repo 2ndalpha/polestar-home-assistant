@@ -42,6 +42,9 @@ _METHOD_GET_CLIMATE = (
 )
 _METHOD_GET_BATTERY = "/services.vehiclestates.battery.BatteryService/GetLatestBattery"
 _METHOD_GET_EXTERIOR = "/services.vehiclestates.exterior.ExteriorService/GetLatestExterior"
+_METHOD_GET_AVAILABILITY = (
+    "/services.vehiclestates.availability.AvailabilityService/GetLatestAvailability"
+)
 _METHOD_GET_LOCATION = "/dtlinternet.DtlInternetService/GetLastKnownLocation"
 _SVC_INVOCATION = "/invocation.InvocationService"
 _METHOD_WINDOW_CONTROL = f"{_SVC_INVOCATION}/WindowControl"
@@ -243,6 +246,32 @@ def _parse_exterior_response(data: bytes) -> dict:
     return result
 
 
+def _parse_availability_response(data: bytes) -> dict:
+    """Parse GetLatestAvailability response.
+
+    Two-level decode: outer envelope has field 3 = Availability state sub-message.
+
+    Availability state fields:
+        field 3: availability_status (varint: 1=AVAILABLE, 2=UNAVAILABLE)
+        field 4: unavailable_reason (varint: 1=NO_INTERNET, 2=POWER_SAVING, ...)
+        field 5: usage_mode (varint: 1=ABANDONED, 2=INACTIVE, ..., 5=DRIVING)
+    """
+    empty = {"availability_status": None, "unavailable_reason": None, "usage_mode": None}
+    if not data:
+        return empty
+
+    outer = _decode_message(data)
+    state = _get_submessage(outer, 3)
+    if state is None:
+        return empty
+
+    return {
+        "availability_status": _get_int(state, 3) or None,
+        "unavailable_reason": _get_int(state, 4) or None,
+        "usage_mode": _get_int(state, 5) or None,
+    }
+
+
 def _parse_location_response(data: bytes) -> dict:
     """Parse GetLastKnownLocation response.
 
@@ -381,6 +410,21 @@ class CepClient:
             return _parse_exterior_response(response)
         except grpc.RpcError as err:
             _LOGGER.warning("CEP GetLatestExterior failed: %s", err)
+            raise
+
+    def get_availability(self, vin: str) -> dict:
+        """Get current vehicle availability state."""
+        channel = self._get_channel()
+        method = channel.unary_unary(
+            _METHOD_GET_AVAILABILITY,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        try:
+            response = method(_build_vin_request(vin), metadata=self._metadata(vin), timeout=30)
+            return _parse_availability_response(response)
+        except grpc.RpcError as err:
+            _LOGGER.warning("CEP GetLatestAvailability failed: %s", err)
             raise
 
     def get_location(self, vin: str) -> dict:

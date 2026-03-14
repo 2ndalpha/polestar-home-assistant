@@ -70,6 +70,12 @@
       },
       "estimated_range": {
         "name": "Estimated range"
+      },
+      "usage_mode": {
+        "name": "Usage mode"
+      },
+      "unavailable_reason": {
+        "name": "Unavailable reason"
       }
     },
     "number": {
@@ -109,6 +115,9 @@
       }
     },
     "binary_sensor": {
+      "vehicle_available": {
+        "name": "Vehicle available"
+      },
       "front_left_door": {
         "name": "Front left door"
       },

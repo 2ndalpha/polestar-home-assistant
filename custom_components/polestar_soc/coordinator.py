@@ -524,6 +524,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
                     "cep_battery": {},
                     "location": {},
                     "exterior": {},
+                    "availability": {},
                 }
 
             vins = [v["vin"] for v in vehicles]
@@ -557,6 +558,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
             cep_battery_by_vin: dict = {}
             location_by_vin: dict = {}
             exterior_by_vin: dict = {}
+            availability_by_vin: dict = {}
             for vin in vins:
                 try:
                     climate_by_vin[vin] = self.cep.get_parking_climatization(vin)
@@ -574,6 +576,10 @@ class PolestarCoordinator(DataUpdateCoordinator):
                     exterior_by_vin[vin] = self.cep.get_exterior(vin)
                 except Exception:
                     _LOGGER.debug("Failed to fetch CEP exterior for %s", vin)
+                try:
+                    availability_by_vin[vin] = self.cep.get_availability(vin)
+                except Exception:
+                    _LOGGER.debug("Failed to fetch CEP availability for %s", vin)
 
             return {
                 "vehicles": vehicles,
@@ -585,6 +591,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 "cep_battery": cep_battery_by_vin,
                 "location": location_by_vin,
                 "exterior": exterior_by_vin,
+                "availability": availability_by_vin,
             }
 
         return await self.hass.async_add_executor_job(_do_fetch)

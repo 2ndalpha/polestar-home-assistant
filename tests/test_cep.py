@@ -9,6 +9,7 @@ from custom_components.polestar_soc.cep import (
     _build_vin_request,
     _format_climate_status,
     _format_heating_intensity,
+    _parse_availability_response,
     _parse_battery_response,
     _parse_climate_response,
     _parse_exterior_response,
@@ -342,3 +343,90 @@ class TestParseExteriorResponse:
         state = _get_submessage(outer, 3)
         assert state is not None
         assert 2 in state  # central_lock field
+
+
+# ---------------------------------------------------------------------------
+# Availability tests
+# ---------------------------------------------------------------------------
+
+
+def _build_availability_state(field_values: dict[int, int]) -> bytes:
+    """Build an Availability state sub-message from {field_number: varint_value}."""
+    data = b""
+    for field_num in sorted(field_values):
+        data += _encode_field_varint(field_num, field_values[field_num])
+    return data
+
+
+def _build_availability_payload(vin: str, field_values: dict[int, int]) -> bytes:
+    """Build a synthetic GetLatestAvailability response with two-level envelope."""
+    state_bytes = _build_availability_state(field_values)
+    data = _encode_field_bytes(2, vin.encode("utf-8"))
+    data += _encode_field_bytes(3, state_bytes)
+    return data
+
+
+AVAILABILITY_AVAILABLE = _build_availability_payload(
+    TEST_VIN,
+    {
+        3: 1,  # availability_status: AVAILABLE
+        5: 2,  # usage_mode: INACTIVE
+    },
+)
+
+AVAILABILITY_UNAVAILABLE = _build_availability_payload(
+    TEST_VIN,
+    {
+        3: 2,  # availability_status: UNAVAILABLE
+        4: 2,  # unavailable_reason: POWER_SAVING_MODE
+        5: 1,  # usage_mode: ABANDONED
+    },
+)
+
+
+class TestParseAvailabilityResponse:
+    def test_available_vehicle(self):
+        result = _parse_availability_response(AVAILABILITY_AVAILABLE)
+        assert result["availability_status"] == 1  # AVAILABLE
+        assert result["unavailable_reason"] is None  # not set
+        assert result["usage_mode"] == 2  # INACTIVE
+
+    def test_unavailable_vehicle(self):
+        result = _parse_availability_response(AVAILABILITY_UNAVAILABLE)
+        assert result["availability_status"] == 2  # UNAVAILABLE
+        assert result["unavailable_reason"] == 2  # POWER_SAVING_MODE
+        assert result["usage_mode"] == 1  # ABANDONED
+
+    def test_unspecified_values(self):
+        """Value 0 for any field returns None."""
+        payload = _build_availability_payload(
+            TEST_VIN,
+            {3: 0, 4: 0, 5: 0},
+        )
+        result = _parse_availability_response(payload)
+        assert result["availability_status"] is None
+        assert result["unavailable_reason"] is None
+        assert result["usage_mode"] is None
+
+    def test_empty_response(self):
+        result = _parse_availability_response(b"")
+        assert result["availability_status"] is None
+        assert result["unavailable_reason"] is None
+        assert result["usage_mode"] is None
+
+    def test_missing_state_submessage(self):
+        """Response with VIN but no field 3 returns all None."""
+        data = _encode_field_bytes(2, TEST_VIN.encode("utf-8"))
+        result = _parse_availability_response(data)
+        assert result["availability_status"] is None
+        assert result["unavailable_reason"] is None
+        assert result["usage_mode"] is None
+
+    def test_two_level_envelope(self):
+        """Verify outer envelope has field 2=VIN and field 3=Availability state."""
+        outer = _decode_message(AVAILABILITY_AVAILABLE)
+        assert outer[2][0] == TEST_VIN.encode("utf-8")
+        assert isinstance(outer[3][0], (bytes, bytearray))
+        state = _get_submessage(outer, 3)
+        assert state is not None
+        assert 3 in state  # availability_status field

@@ -123,3 +123,23 @@ ALARM_STATUS_MAP: dict[int, str | None] = {
     1: "Idle",
     2: "Triggered",
 }
+
+# Availability enums (AvailabilityService)
+UNAVAILABLE_REASON_MAP: dict[int, str] = {
+    1: "No internet",
+    2: "Power saving mode",
+    3: "Car in use",
+    4: "OTA installation in progress",
+    5: "Stolen vehicle tracking in progress",
+    6: "Service mode active",
+}
+
+USAGE_MODE_MAP: dict[int, str] = {
+    1: "Abandoned",
+    2: "Inactive",
+    3: "Convenience",
+    4: "Active",
+    5: "Driving",
+    6: "Engine on",
+    7: "Engine off",
+}

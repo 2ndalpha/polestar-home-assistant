@@ -18,7 +18,13 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CLIMATE_RUNNING_STATUS_MAP, DOMAIN, HEATING_INTENSITY_MAP
+from .const import (
+    CLIMATE_RUNNING_STATUS_MAP,
+    DOMAIN,
+    HEATING_INTENSITY_MAP,
+    UNAVAILABLE_REASON_MAP,
+    USAGE_MODE_MAP,
+)
 from .coordinator import PolestarCoordinator
 
 
@@ -84,6 +90,26 @@ def _climate_heating(key: str) -> Callable[[dict, str], str | None]:
     return _value_fn
 
 
+def _usage_mode(data: dict, vin: str) -> str | None:
+    availability = data.get("availability", {}).get(vin)
+    if availability is None:
+        return None
+    val = availability.get("usage_mode")
+    if val is None:
+        return None
+    return USAGE_MODE_MAP.get(val)
+
+
+def _unavailable_reason(data: dict, vin: str) -> str | None:
+    availability = data.get("availability", {}).get(vin)
+    if availability is None:
+        return None
+    val = availability.get("unavailable_reason")
+    if val is None:
+        return None
+    return UNAVAILABLE_REASON_MAP.get(val)
+
+
 def _estimated_range(data: dict, vin: str) -> int | None:
     cep_battery = data.get("cep_battery", {}).get(vin)
     if cep_battery is None:
@@ -94,6 +120,8 @@ def _estimated_range(data: dict, vin: str) -> int | None:
 # Options lists for ENUM sensors
 _CLIMATE_STATUS_OPTIONS = list(CLIMATE_RUNNING_STATUS_MAP.values())
 _HEATING_INTENSITY_OPTIONS = list(HEATING_INTENSITY_MAP.values())
+_USAGE_MODE_OPTIONS = list(USAGE_MODE_MAP.values())
+_UNAVAILABLE_REASON_OPTIONS = list(UNAVAILABLE_REASON_MAP.values())
 
 SENSOR_DESCRIPTIONS: tuple[PolestarSensorDescription, ...] = (
     PolestarSensorDescription(
@@ -174,6 +202,21 @@ SENSOR_DESCRIPTIONS: tuple[PolestarSensorDescription, ...] = (
         device_class=SensorDeviceClass.DISTANCE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=_estimated_range,
+    ),
+    PolestarSensorDescription(
+        key="usage_mode",
+        translation_key="usage_mode",
+        device_class=SensorDeviceClass.ENUM,
+        options=_USAGE_MODE_OPTIONS,
+        value_fn=_usage_mode,
+    ),
+    PolestarSensorDescription(
+        key="unavailable_reason",
+        translation_key="unavailable_reason",
+        device_class=SensorDeviceClass.ENUM,
+        options=_UNAVAILABLE_REASON_OPTIONS,
+        entity_registry_enabled_default=False,
+        value_fn=_unavailable_reason,
     ),
 )
 
