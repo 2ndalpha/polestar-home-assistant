@@ -57,6 +57,8 @@ _METHOD_SET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/SetGlobalChargeTimer"
 _METHOD_CLIMATIZATION_START = f"{_SVC_INVOCATION}/ClimatizationStart"
 _METHOD_CLIMATIZATION_STOP = f"{_SVC_INVOCATION}/ClimatizationStop"
 
+_INVOCATION_EXPIRY_MS = 120_000  # command expiry: 120 seconds
+
 
 # ---------------------------------------------------------------------------
 # Protobuf message builders
@@ -159,7 +161,7 @@ def _build_invocation_request(vin: str) -> bytes:
     msg = b""
     msg += _encode_field_bytes(1, str(uuid.uuid4()).encode("utf-8"))
     msg += _encode_field_bytes(2, vin.encode("utf-8"))
-    msg += _encode_field_varint(3, int(time.time() * 1000) + 120_000)
+    msg += _encode_field_varint(3, int(time.time() * 1000) + _INVOCATION_EXPIRY_MS)
     return msg
 
 

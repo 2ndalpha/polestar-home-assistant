@@ -20,15 +20,10 @@ from .pccs import PccsError
 
 _LOGGER = logging.getLogger(__name__)
 
-# Climate statuses that indicate pre-conditioning is active
-_CLIMATE_ACTIVE_STATUSES = {
-    "Starting",
-    "Pre-conditioning",
-    "Pre-conditioning (external power)",
-    "Pre-cleaning",
-    "Pre-conditioning and cleaning",
-    "Residual heat",
-}
+# Climate statuses that indicate pre-conditioning is NOT active.
+# Any new status added to CLIMATE_RUNNING_STATUS_MAP will default to "active"
+# (conservative — switch shows as on, prompting the user to turn it off).
+_CLIMATE_INACTIVE_STATUSES = {"Unknown", "Off"}
 
 
 async def async_setup_entry(
@@ -168,7 +163,7 @@ class PolestarClimateSwitch(CoordinatorEntity[PolestarCoordinator], SwitchEntity
         status = climate.get("status")
         if status is None:
             return None
-        return status in _CLIMATE_ACTIVE_STATUSES
+        return status not in _CLIMATE_INACTIVE_STATUSES
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Start climate pre-conditioning."""
