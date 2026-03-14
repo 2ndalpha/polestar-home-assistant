@@ -380,8 +380,7 @@ class TestParseSetChargeTimerResponse:
 
     def test_success(self):
         data = (
-            _encode_field_bytes(1, b"test-uuid")
-            + _encode_field_varint(2, 1)  # SUCCESS
+            _encode_field_bytes(1, b"test-uuid") + _encode_field_varint(2, 1)  # SUCCESS
         )
         result = _parse_set_charge_timer_response(data)
         assert result["id"] == "test-uuid"
