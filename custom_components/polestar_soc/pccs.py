@@ -248,6 +248,8 @@ class PccsClient:
         back to the regular read token.
         """
         token = self._write_access_token or self._access_token
+        if not self._write_access_token:
+            _LOGGER.debug("No PCCS write token available, falling back to web token")
         return [
             ("authorization", f"Bearer {token}"),
             ("vin", vin),
