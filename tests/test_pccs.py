@@ -27,7 +27,6 @@ from custom_components.polestar_soc.pccs import (
     _parse_set_charge_timer_response,
     _parse_target_soc_response,
 )
-from custom_components.polestar_soc.proto import _parse_invocation_response
 from custom_components.polestar_soc.proto import (
     _decode_message,
     _decode_varint,
@@ -38,6 +37,7 @@ from custom_components.polestar_soc.proto import (
     _get_bool,
     _get_int,
     _get_submessage,
+    _parse_invocation_response,
 )
 
 # ---------------------------------------------------------------------------
