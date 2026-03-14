@@ -7,6 +7,7 @@ from custom_components.polestar_soc.pccs import (
     _METHOD_GET_TARGET_SOC,
     _METHOD_SET_CHARGE_TIMER,
     _METHOD_SET_TARGET_SOC,
+    PccsClient,
     _build_set_charge_timer_request,
     _build_set_target_soc_request,
     _build_time_of_day,
@@ -220,6 +221,14 @@ class TestBuildSetTargetSocRequest:
         assert chronos[2] == [b"TESTVIN123"]
         # Field 2 is the target SOC value
         assert fields[2] == [80]
+        # Field 3 is the setting type (default CUSTOM=3)
+        assert fields[3] == [3]
+
+    def test_custom_setting_type(self):
+        data = _build_set_target_soc_request("TESTVIN123", 80, setting_type=1)
+        fields = _decode_message(data)
+        assert fields[2] == [80]
+        assert fields[3] == [1]
 
 
 class TestBuildTimeOfDay:
@@ -325,3 +334,45 @@ class TestParseChargeTimerResponse:
         assert result["end_hour"] == 7
         assert result["end_min"] == 0
         assert result["is_departure_active"] is False
+
+
+# ---------------------------------------------------------------------------
+# PccsClient write token
+# ---------------------------------------------------------------------------
+
+
+class TestPccsClientWriteToken:
+    def test_default_write_token_is_none(self):
+        client = PccsClient("read-token")
+        assert client.write_access_token is None
+
+    def test_write_token_set_via_constructor(self):
+        client = PccsClient("read-token", write_access_token="write-token")
+        assert client.write_access_token == "write-token"
+
+    def test_write_token_setter(self):
+        client = PccsClient("read-token")
+        client.write_access_token = "new-write-token"
+        assert client.write_access_token == "new-write-token"
+
+    def test_read_metadata_uses_read_token(self):
+        client = PccsClient("read-token", write_access_token="write-token")
+        meta = client._metadata("TESTVIN")
+        assert ("authorization", "Bearer read-token") in meta
+        assert ("vin", "TESTVIN") in meta
+
+    def test_write_metadata_uses_write_token(self):
+        client = PccsClient("read-token", write_access_token="write-token")
+        meta = client._write_metadata("TESTVIN")
+        assert ("authorization", "Bearer write-token") in meta
+        assert ("vin", "TESTVIN") in meta
+
+    def test_write_metadata_falls_back_to_read_token(self):
+        client = PccsClient("read-token")
+        meta = client._write_metadata("TESTVIN")
+        assert ("authorization", "Bearer read-token") in meta
+
+    def test_write_metadata_falls_back_when_empty_string(self):
+        client = PccsClient("read-token", write_access_token="")
+        meta = client._write_metadata("TESTVIN")
+        assert ("authorization", "Bearer read-token") in meta

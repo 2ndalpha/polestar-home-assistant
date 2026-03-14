@@ -426,8 +426,12 @@ class PolestarCoordinator(DataUpdateCoordinator):
         self._pccs_api.access_token = entry.data.get("pccs_access_token")
         self._pccs_api.refresh_token = entry.data.get("pccs_refresh_token")
 
-        # PCCS chronos services (charge timer, target SOC) accept the web token
-        self.pccs = PccsClient(self.api.access_token or "")
+        # PCCS chronos services accept the web token for reads;
+        # writes require the PCCS 2FA token (customer:attributes:write scope).
+        self.pccs = PccsClient(
+            access_token=self.api.access_token or "",
+            write_access_token=self._pccs_api.access_token,
+        )
         self.cep = CepClient(self.api.access_token or "")
         self._email: str = entry.data["email"]
         self._password: str = entry.data["password"]
@@ -594,8 +598,9 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 "pccs_refresh_token": self._pccs_api.refresh_token,
             },
         )
-        # Keep gRPC client tokens in sync (both use web token)
+        # Keep gRPC client tokens in sync
         self.pccs.access_token = self.api.access_token or ""
+        self.pccs.write_access_token = self._pccs_api.access_token
         self.cep.access_token = self.api.access_token or ""
 
     def close(self) -> None:

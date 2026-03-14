@@ -74,10 +74,18 @@ def _build_get_request(vin: str) -> bytes:
     return _encode_field_bytes(1, _build_chronos_request(vin))
 
 
-def _build_set_target_soc_request(vin: str, target_soc: int) -> bytes:
-    """Build SetTargetSoc request bytes."""
+def _build_set_target_soc_request(vin: str, target_soc: int, setting_type: int = 3) -> bytes:
+    """Build SetTargetSoc request bytes.
+
+    Args:
+        vin: Vehicle identification number.
+        target_soc: Target state of charge percentage (e.g. 80).
+        setting_type: ChargeTargetLevelSettingType enum value.
+            1=DAILY, 2=LONG_TRIP, 3=CUSTOM (default).
+    """
     msg = _encode_field_bytes(1, _build_chronos_request(vin))
     msg += _encode_field_varint(2, target_soc)
+    msg += _encode_field_varint(3, setting_type)
     return msg
 
 
@@ -190,11 +198,17 @@ def _parse_charge_timer_response(data: bytes) -> dict:
 
 
 class PccsClient:
-    """Client for the PCCS gRPC API."""
+    """Client for the PCCS gRPC API.
 
-    def __init__(self, access_token: str) -> None:
-        """Initialize with an OAuth access token."""
+    Uses two tokens: ``access_token`` for read operations (web client token,
+    auto-refreshable) and ``write_access_token`` for write operations (PCCS
+    2FA token with ``customer:attributes:write`` scope).
+    """
+
+    def __init__(self, access_token: str, write_access_token: str | None = None) -> None:
+        """Initialize with OAuth access tokens."""
         self._access_token = access_token
+        self._write_access_token = write_access_token
         self._channel: grpc.Channel | None = None
 
     @property
@@ -205,6 +219,14 @@ class PccsClient:
     def access_token(self, value: str) -> None:
         self._access_token = value
 
+    @property
+    def write_access_token(self) -> str | None:
+        return self._write_access_token
+
+    @write_access_token.setter
+    def write_access_token(self, value: str | None) -> None:
+        self._write_access_token = value
+
     def _get_channel(self) -> grpc.Channel:
         """Get or create the gRPC channel."""
         if self._channel is None:
@@ -213,9 +235,23 @@ class PccsClient:
         return self._channel
 
     def _metadata(self, vin: str) -> list[tuple[str, str]]:
-        """Build gRPC call metadata."""
+        """Build gRPC call metadata for read operations."""
         return [
             ("authorization", f"Bearer {self._access_token}"),
+            ("vin", vin),
+        ]
+
+    def _write_metadata(self, vin: str) -> list[tuple[str, str]]:
+        """Build gRPC call metadata for write operations.
+
+        Uses the write token (PCCS 2FA) when available, otherwise falls
+        back to the regular read token.
+        """
+        token = self._write_access_token or self._access_token
+        if not self._write_access_token:
+            _LOGGER.debug("No PCCS write token available, falling back to web token")
+        return [
+            ("authorization", f"Bearer {token}"),
             ("vin", vin),
         ]
 
@@ -252,6 +288,7 @@ class PccsClient:
         """Set the charge target SOC for a vehicle.
 
         SetTargetSoc is a server-streaming RPC; we take the first response.
+        Requires the PCCS 2FA token (customer:attributes:write scope).
         """
         channel = self._get_channel()
         method = channel.unary_stream(
@@ -261,7 +298,7 @@ class PccsClient:
         )
         request = _build_set_target_soc_request(vin, percentage)
         try:
-            responses = method(request, metadata=self._metadata(vin), timeout=30)
+            responses = method(request, metadata=self._write_metadata(vin), timeout=30)
             for response in responses:
                 return _parse_target_soc_response(response)
             return _parse_target_soc_response(b"")
@@ -305,6 +342,7 @@ class PccsClient:
         """Set the global charge timer for a vehicle.
 
         SetGlobalChargeTimer is a server-streaming RPC; we take the first response.
+        Requires the PCCS 2FA token (customer:attributes:write scope).
         """
         channel = self._get_channel()
         method = channel.unary_stream(
@@ -314,7 +352,7 @@ class PccsClient:
         )
         request = _build_set_charge_timer_request(vin, start_hour, start_min, end_hour, end_min)
         try:
-            responses = method(request, metadata=self._metadata(vin), timeout=30)
+            responses = method(request, metadata=self._write_metadata(vin), timeout=30)
             for response in responses:
                 return _parse_charge_timer_response(response)
             return _parse_charge_timer_response(b"")

@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 from datetime import time
 
+import grpc
 from homeassistant.components.time import TimeEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -111,12 +113,15 @@ class PolestarChargeTimeEntity(CoordinatorEntity[PolestarCoordinator], TimeEntit
             start_m = timer_data.get("start_min") or 0
             end_h, end_m = value.hour, value.minute
 
-        await self.hass.async_add_executor_job(
-            self.coordinator.pccs.set_global_charge_timer,
-            self._vin,
-            start_h,
-            start_m,
-            end_h,
-            end_m,
-        )
+        try:
+            await self.hass.async_add_executor_job(
+                self.coordinator.pccs.set_global_charge_timer,
+                self._vin,
+                start_h,
+                start_m,
+                end_h,
+                end_m,
+            )
+        except grpc.RpcError as err:
+            raise HomeAssistantError(f"Failed to set charge timer: {err}") from err
         await self.coordinator.async_request_refresh()
