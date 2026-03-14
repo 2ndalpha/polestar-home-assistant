@@ -91,6 +91,25 @@ HEATING_INTENSITY_MAP: dict[int, str] = {
     3: "High",
 }
 
+# InvocationResponse status enum (InvocationService)
+INVOCATION_STATUS_MAP: dict[int, str] = {
+    0: "UNKNOWN_ERROR",
+    1: "SENT",
+    2: "CAR_OFFLINE",
+    4: "DELIVERED",
+    5: "DELIVERY_TIMEOUT",
+    6: "SUCCESS",
+    7: "RESPONSE_TIMEOUT",
+    8: "UNKNOWN_CAR_ERROR",
+    9: "NOT_ALLOWED_PRIVACY_ENABLED",
+    10: "NOT_ALLOWED_WRONG_USAGE_MODE",
+    11: "INVOCATION_SPECIFIC_ERROR",
+    12: "NOT_ALLOWED_CONFLICTING_INVOCATION",
+}
+
+# Intermediate statuses (command still in progress)
+_INVOCATION_INTERMEDIATE_STATUSES = {1, 4}  # SENT, DELIVERED
+
 # Exterior state enums (ExteriorService)
 LOCK_STATUS_MAP: dict[int, str | None] = {
     0: None,

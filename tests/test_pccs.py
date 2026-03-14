@@ -1,17 +1,25 @@
 """Tests for PCCS protobuf wire-format helpers."""
 
+import struct
+
 import pytest
 
 from custom_components.polestar_soc.pccs import (
+    _METHOD_CLIMATIZATION_START,
+    _METHOD_CLIMATIZATION_STOP,
     _METHOD_GET_CHARGE_TIMER,
     _METHOD_GET_TARGET_SOC,
     _METHOD_SET_CHARGE_TIMER,
     _METHOD_SET_TARGET_SOC,
     PccsClient,
+    _build_climatization_start_request,
+    _build_climatization_stop_request,
+    _build_invocation_request,
     _build_set_charge_timer_request,
     _build_set_target_soc_request,
     _build_time_of_day,
     _parse_charge_timer_response,
+    _parse_invocation_response,
     _parse_set_charge_timer_response,
     _parse_target_soc_response,
 )
@@ -19,6 +27,7 @@ from custom_components.polestar_soc.proto import (
     _decode_message,
     _decode_varint,
     _encode_field_bytes,
+    _encode_field_fixed32,
     _encode_field_varint,
     _encode_varint,
     _get_bool,
@@ -45,6 +54,14 @@ class TestServicePaths:
     def test_charge_timer_set_path(self):
         expected = "/pccs.chronos.services.v2.GlobalChargeTimerService/SetGlobalChargeTimer"
         assert expected == _METHOD_SET_CHARGE_TIMER
+
+    def test_climatization_start_path(self):
+        expected = "/pccs.invocation.v1.InvocationService/ClimatizationStart"
+        assert expected == _METHOD_CLIMATIZATION_START
+
+    def test_climatization_stop_path(self):
+        expected = "/pccs.invocation.v1.InvocationService/ClimatizationStop"
+        assert expected == _METHOD_CLIMATIZATION_STOP
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +147,30 @@ class TestEncodeFieldBytes:
         result = _encode_field_bytes(1, payload)
         decoded = _decode_message(result)
         assert decoded[1] == [b"hello"]
+
+
+class TestEncodeFieldFixed32:
+    def test_roundtrip(self):
+        result = _encode_field_fixed32(3, 22.0)
+        decoded = _decode_message(result)
+        assert 3 in decoded
+        # _decode_message stores fixed32 as uint32; reinterpret as float
+        raw = decoded[3][0]
+        value = struct.unpack("<f", struct.pack("<I", raw))[0]
+        assert value == pytest.approx(22.0)
+
+    def test_field_number_preserved(self):
+        for fn in (1, 3, 5):
+            result = _encode_field_fixed32(fn, 18.5)
+            decoded = _decode_message(result)
+            assert fn in decoded
+
+    def test_negative_temperature(self):
+        result = _encode_field_fixed32(3, -5.0)
+        decoded = _decode_message(result)
+        raw = decoded[3][0]
+        value = struct.unpack("<f", struct.pack("<I", raw))[0]
+        assert value == pytest.approx(-5.0)
 
 
 # ---------------------------------------------------------------------------
@@ -471,3 +512,126 @@ class TestPccsClientWriteToken:
         client = PccsClient("read-token", write_access_token="")
         meta = client._write_metadata("TESTVIN")
         assert ("authorization", "Bearer read-token") in meta
+
+
+# ---------------------------------------------------------------------------
+# Invocation message builders
+# ---------------------------------------------------------------------------
+
+
+class TestBuildInvocationRequest:
+    def test_field_layout(self):
+        data = _build_invocation_request("TESTVIN123")
+        fields = _decode_message(data)
+        # Field 1: UUID string
+        assert 1 in fields
+        uuid_val = fields[1][0]
+        assert isinstance(uuid_val, bytes)
+        assert len(uuid_val.decode("utf-8")) == 36  # UUID format
+        # Field 2: VIN string
+        assert fields[2] == [b"TESTVIN123"]
+        # Field 3: expiration timestamp (varint, should be > 0)
+        assert 3 in fields
+        assert fields[3][0] > 0
+
+
+class TestBuildClimatizationStartRequest:
+    def test_roundtrip(self):
+        data = _build_climatization_start_request("TESTVIN123", 22.0)
+        fields = _decode_message(data)
+        # Field 1: InvocationRequest sub-message
+        assert 1 in fields
+        invocation = _decode_message(fields[1][0])
+        assert invocation[2] == [b"TESTVIN123"]
+        # Field 2: start = true (varint 1)
+        assert fields[2] == [1]
+        # Field 3: temperature as fixed32
+        assert 3 in fields
+        raw = fields[3][0]
+        temp = struct.unpack("<f", struct.pack("<I", raw))[0]
+        assert temp == pytest.approx(22.0)
+
+    def test_default_temperature(self):
+        data = _build_climatization_start_request("TESTVIN123")
+        fields = _decode_message(data)
+        raw = fields[3][0]
+        temp = struct.unpack("<f", struct.pack("<I", raw))[0]
+        assert temp == pytest.approx(22.0)
+
+    def test_custom_temperature(self):
+        data = _build_climatization_start_request("TESTVIN123", 25.5)
+        fields = _decode_message(data)
+        raw = fields[3][0]
+        temp = struct.unpack("<f", struct.pack("<I", raw))[0]
+        assert temp == pytest.approx(25.5)
+
+
+class TestBuildClimatizationStopRequest:
+    def test_roundtrip(self):
+        data = _build_climatization_stop_request("TESTVIN123")
+        fields = _decode_message(data)
+        # Field 1: InvocationRequest sub-message (only field)
+        assert 1 in fields
+        invocation = _decode_message(fields[1][0])
+        assert invocation[2] == [b"TESTVIN123"]
+        # No other fields
+        assert 2 not in fields
+        assert 3 not in fields
+
+
+# ---------------------------------------------------------------------------
+# Invocation response parser
+# ---------------------------------------------------------------------------
+
+
+class TestParseInvocationResponse:
+    def test_empty_data(self):
+        result = _parse_invocation_response(b"")
+        assert result["id"] == ""
+        assert result["vin"] == ""
+        assert result["status"] == 0
+        assert result["message"] == ""
+
+    def test_success_status(self):
+        # Build InvocationResponse: id=1, vin=2, status=3, message=4
+        inner = (
+            _encode_field_bytes(1, b"test-uuid")
+            + _encode_field_bytes(2, b"TESTVIN123")
+            + _encode_field_varint(3, 6)  # SUCCESS
+        )
+        # Wrap in ClimatizationResponse: field 1 = InvocationResponse
+        data = _encode_field_bytes(1, inner)
+        result = _parse_invocation_response(data)
+        assert result["id"] == "test-uuid"
+        assert result["vin"] == "TESTVIN123"
+        assert result["status"] == 6
+        assert result["message"] == ""
+
+    def test_error_status_with_message(self):
+        inner = (
+            _encode_field_bytes(1, b"test-uuid")
+            + _encode_field_bytes(2, b"TESTVIN123")
+            + _encode_field_varint(3, 2)  # CAR_OFFLINE
+            + _encode_field_bytes(4, b"Vehicle not reachable")
+        )
+        data = _encode_field_bytes(1, inner)
+        result = _parse_invocation_response(data)
+        assert result["status"] == 2
+        assert result["message"] == "Vehicle not reachable"
+
+    def test_sent_status(self):
+        inner = (
+            _encode_field_bytes(1, b"test-uuid")
+            + _encode_field_bytes(2, b"TESTVIN123")
+            + _encode_field_varint(3, 1)  # SENT
+        )
+        data = _encode_field_bytes(1, inner)
+        result = _parse_invocation_response(data)
+        assert result["status"] == 1
+
+    def test_no_inner_message(self):
+        # Outer message with no field 1
+        data = _encode_field_varint(2, 42)
+        result = _parse_invocation_response(data)
+        assert result["id"] == ""
+        assert result["status"] == 0

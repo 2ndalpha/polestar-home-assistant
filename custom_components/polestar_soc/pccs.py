@@ -11,15 +11,17 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 import uuid
 
 import grpc
 from homeassistant.exceptions import HomeAssistantError
 
-from .const import PCCS_API_HOST
+from .const import _INVOCATION_INTERMEDIATE_STATUSES, INVOCATION_STATUS_MAP, PCCS_API_HOST
 from .proto import (
     _decode_message,
     _encode_field_bytes,
+    _encode_field_fixed32,
     _encode_field_varint,
     _get_bool,
     _get_int,
@@ -46,11 +48,16 @@ class PccsError(HomeAssistantError):
 # gRPC service method paths
 _SVC_TARGET_SOC = "/pccs.chronos.services.v1.TargetSocService"
 _SVC_CHARGE_TIMER = "/pccs.chronos.services.v2.GlobalChargeTimerService"
+_SVC_INVOCATION = "/pccs.invocation.v1.InvocationService"
 
 _METHOD_GET_TARGET_SOC = f"{_SVC_TARGET_SOC}/GetTargetSoc"
 _METHOD_SET_TARGET_SOC = f"{_SVC_TARGET_SOC}/SetTargetSoc"
 _METHOD_GET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/GetGlobalChargeTimerStream"
 _METHOD_SET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/SetGlobalChargeTimer"
+_METHOD_CLIMATIZATION_START = f"{_SVC_INVOCATION}/ClimatizationStart"
+_METHOD_CLIMATIZATION_STOP = f"{_SVC_INVOCATION}/ClimatizationStop"
+
+_INVOCATION_EXPIRY_MS = 120_000  # command expiry: 120 seconds
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +148,81 @@ def _build_set_charge_timer_request(
     msg = _encode_field_bytes(1, _build_chronos_request(vin))
     msg += _encode_field_bytes(2, timer)
     return msg
+
+
+def _build_invocation_request(vin: str) -> bytes:
+    """Build an InvocationRequest sub-message.
+
+    InvocationRequest (pccs.invocation.v1):
+        field 1: id (string)                   — random UUID
+        field 2: vin (string)                  — vehicle VIN
+        field 3: expiration_timestamp (int64)  — Unix timestamp for command expiry
+    """
+    msg = b""
+    msg += _encode_field_bytes(1, str(uuid.uuid4()).encode("utf-8"))
+    msg += _encode_field_bytes(2, vin.encode("utf-8"))
+    msg += _encode_field_varint(3, int(time.time() * 1000) + _INVOCATION_EXPIRY_MS)
+    return msg
+
+
+def _build_climatization_start_request(vin: str, temperature: float = 22.0) -> bytes:
+    """Build ClimatizationStartRequest bytes.
+
+    Args:
+        vin: Vehicle identification number.
+        temperature: Target cabin temperature in Celsius (default 22.0).
+    """
+    msg = _encode_field_bytes(1, _build_invocation_request(vin))
+    msg += _encode_field_varint(2, 1)  # start = true
+    msg += _encode_field_fixed32(3, temperature)
+    return msg
+
+
+def _build_climatization_stop_request(vin: str) -> bytes:
+    """Build ClimatizationStopRequest bytes."""
+    return _encode_field_bytes(1, _build_invocation_request(vin))
+
+
+def _parse_invocation_response(data: bytes) -> dict:
+    """Parse ClimatizationResponse → InvocationResponse.
+
+    ClimatizationResponse:
+        field 1: InvocationResponse (message)
+
+    InvocationResponse:
+        field 1: id (string)
+        field 2: vin (string)
+        field 3: status (varint enum)
+        field 4: message (string)
+        field 5: timestamp (int64)
+    """
+    empty = {"id": "", "vin": "", "status": 0, "message": ""}
+    if not data:
+        return empty
+
+    outer = _decode_message(data)
+    inner = _get_submessage(outer, 1)
+    if inner is None:
+        return empty
+
+    id_val = inner.get(1, [b""])[0]
+    if isinstance(id_val, bytes):
+        id_val = id_val.decode("utf-8", errors="replace")
+
+    vin_val = inner.get(2, [b""])[0]
+    if isinstance(vin_val, bytes):
+        vin_val = vin_val.decode("utf-8", errors="replace")
+
+    msg_val = inner.get(4, [b""])[0]
+    if isinstance(msg_val, bytes):
+        msg_val = msg_val.decode("utf-8", errors="replace")
+
+    return {
+        "id": id_val,
+        "vin": vin_val,
+        "status": _get_int(inner, 3, 0),
+        "message": msg_val,
+    }
 
 
 def _parse_target_soc_response(data: bytes) -> dict:
@@ -446,3 +528,69 @@ class PccsClient:
             _LOGGER.debug("SetGlobalChargeTimer: values unchanged")
 
         return result
+
+    # -- Climate (InvocationService) -----------------------------------------
+
+    def _send_invocation(self, vin: str, method_path: str, request: bytes) -> dict:
+        """Send an InvocationService command and wait for terminal status.
+
+        InvocationService methods are SERVER_STREAMING.  The stream emits
+        intermediate statuses (SENT, DELIVERED) before a terminal status
+        (SUCCESS or an error).  We iterate until we reach a terminal status.
+
+        The server may cancel the stream (~5s timeout) before SUCCESS
+        arrives.  If we received DELIVERED before cancellation, the command
+        was accepted by the vehicle and we treat it as success.
+        """
+        channel = self._get_channel()
+        method = channel.unary_stream(
+            method_path,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        result = _parse_invocation_response(b"")
+        try:
+            responses = method(request, metadata=self._write_metadata(vin), timeout=60)
+            for response in responses:
+                result = _parse_invocation_response(response)
+                status = result.get("status", 0)
+                if status not in _INVOCATION_INTERMEDIATE_STATUSES:
+                    break
+        except grpc.RpcError as err:
+            # If the server cancelled the stream after DELIVERED, the
+            # command was accepted — treat as success.
+            if result.get("status") == 4:  # DELIVERED
+                _LOGGER.debug(
+                    "PCCS %s stream cancelled after DELIVERED — treating as success",
+                    method_path,
+                )
+                return result
+            _LOGGER.warning("PCCS %s failed: %s", method_path, err)
+            raise
+
+        status = result.get("status", 0)
+        if status not in (4, 6):  # Not DELIVERED or SUCCESS
+            status_name = INVOCATION_STATUS_MAP.get(status, f"STATUS_{status}")
+            server_msg = result.get("message", "")
+            msg = f"Climatization command failed: {status_name}"
+            if server_msg:
+                msg += f" - {server_msg}"
+            raise PccsError(msg)
+
+        return result
+
+    def climatization_start(self, vin: str, temperature: float = 22.0) -> dict:
+        """Start vehicle climate pre-conditioning.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+        """
+        request = _build_climatization_start_request(vin, temperature)
+        return self._send_invocation(vin, _METHOD_CLIMATIZATION_START, request)
+
+    def climatization_stop(self, vin: str) -> dict:
+        """Stop vehicle climate pre-conditioning.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+        """
+        request = _build_climatization_stop_request(vin)
+        return self._send_invocation(vin, _METHOD_CLIMATIZATION_STOP, request)
