@@ -217,9 +217,7 @@ class TestClimateEntity:
 
 class TestClimateTurnOn:
     @pytest.mark.asyncio
-    async def test_calls_climatization_start(
-        self, sample_coordinator_data, sample_vehicle
-    ):
+    async def test_calls_climatization_start(self, sample_coordinator_data, sample_vehicle):
         switch = _make_climate_switch(sample_coordinator_data, sample_vehicle)
 
         hass = MagicMock()
@@ -232,9 +230,7 @@ class TestClimateTurnOn:
         switch.coordinator.async_request_refresh.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_grpc_error_raises_ha_error(
-        self, sample_coordinator_data, sample_vehicle
-    ):
+    async def test_grpc_error_raises_ha_error(self, sample_coordinator_data, sample_vehicle):
         switch = _make_climate_switch(sample_coordinator_data, sample_vehicle)
 
         hass = MagicMock()
@@ -245,9 +241,7 @@ class TestClimateTurnOn:
             await switch.async_turn_on()
 
     @pytest.mark.asyncio
-    async def test_pccs_error_raises_ha_error(
-        self, sample_coordinator_data, sample_vehicle
-    ):
+    async def test_pccs_error_raises_ha_error(self, sample_coordinator_data, sample_vehicle):
         switch = _make_climate_switch(sample_coordinator_data, sample_vehicle)
 
         hass = MagicMock()
@@ -262,9 +256,7 @@ class TestClimateTurnOn:
 
 class TestClimateTurnOff:
     @pytest.mark.asyncio
-    async def test_calls_climatization_stop(
-        self, sample_coordinator_data, sample_vehicle
-    ):
+    async def test_calls_climatization_stop(self, sample_coordinator_data, sample_vehicle):
         switch = _make_climate_switch(sample_coordinator_data, sample_vehicle)
 
         hass = MagicMock()
@@ -277,9 +269,7 @@ class TestClimateTurnOff:
         switch.coordinator.async_request_refresh.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_grpc_error_raises_ha_error(
-        self, sample_coordinator_data, sample_vehicle
-    ):
+    async def test_grpc_error_raises_ha_error(self, sample_coordinator_data, sample_vehicle):
         switch = _make_climate_switch(sample_coordinator_data, sample_vehicle)
 
         hass = MagicMock()
