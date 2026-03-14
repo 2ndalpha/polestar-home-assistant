@@ -9,15 +9,20 @@ from custom_components.polestar_soc.pccs import (
     _METHOD_CLIMATIZATION_STOP,
     _METHOD_GET_CHARGE_TIMER,
     _METHOD_GET_TARGET_SOC,
+    _METHOD_LOCK,
     _METHOD_SET_CHARGE_TIMER,
     _METHOD_SET_TARGET_SOC,
+    _METHOD_UNLOCK,
     PccsClient,
     _build_climatization_start_request,
     _build_climatization_stop_request,
     _build_invocation_request,
+    _build_lock_request,
     _build_set_charge_timer_request,
     _build_set_target_soc_request,
     _build_time_of_day,
+    _build_unlock_request,
+    _lock_error_context,
     _parse_charge_timer_response,
     _parse_invocation_response,
     _parse_set_charge_timer_response,
@@ -635,3 +640,107 @@ class TestParseInvocationResponse:
         result = _parse_invocation_response(data)
         assert result["id"] == ""
         assert result["status"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Lock/Unlock service paths
+# ---------------------------------------------------------------------------
+
+
+class TestLockServicePaths:
+    def test_lock_path(self):
+        assert _METHOD_LOCK == "/pccs.invocation.v1.InvocationService/Lock"
+
+    def test_unlock_path(self):
+        assert _METHOD_UNLOCK == "/pccs.invocation.v1.InvocationService/Unlock"
+
+
+# ---------------------------------------------------------------------------
+# Lock/Unlock message builders
+# ---------------------------------------------------------------------------
+
+
+class TestBuildLockRequest:
+    def test_default_lock_type(self):
+        data = _build_lock_request("TESTVIN123")
+        fields = _decode_message(data)
+        # Field 1: InvocationRequest sub-message
+        assert 1 in fields
+        invocation = _decode_message(fields[1][0])
+        assert invocation[2] == [b"TESTVIN123"]
+        # Field 2: lockType omitted for default (0 = LOCK)
+        assert 2 not in fields
+
+    def test_reduced_guard_lock_type(self):
+        data = _build_lock_request("TESTVIN123", lock_type=1)
+        fields = _decode_message(data)
+        assert 1 in fields
+        # Field 2: lockType = 1 (LOCK_REDUCED_GUARD)
+        assert fields[2] == [1]
+
+    def test_invocation_request_has_uuid_and_expiry(self):
+        data = _build_lock_request("TESTVIN123")
+        fields = _decode_message(data)
+        invocation = _decode_message(fields[1][0])
+        # Field 1: UUID
+        uuid_val = invocation[1][0]
+        assert isinstance(uuid_val, bytes)
+        assert len(uuid_val.decode("utf-8")) == 36
+        # Field 3: expiration timestamp
+        assert invocation[3][0] > 0
+
+
+class TestBuildUnlockRequest:
+    def test_roundtrip(self):
+        data = _build_unlock_request("TESTVIN123")
+        fields = _decode_message(data)
+        # Field 1: InvocationRequest sub-message (only field)
+        assert 1 in fields
+        invocation = _decode_message(fields[1][0])
+        assert invocation[2] == [b"TESTVIN123"]
+        # No other fields
+        assert 2 not in fields
+        assert 3 not in fields
+
+    def test_structurally_identical_to_climatization_stop(self):
+        """UnlockRequest has the same wire structure as ClimatizationStopRequest."""
+        lock_data = _build_unlock_request("SAMEVIN")
+        stop_data = _build_climatization_stop_request("SAMEVIN")
+        # Both have only field 1, but UUIDs differ — check field layout
+        lock_fields = _decode_message(lock_data)
+        stop_fields = _decode_message(stop_data)
+        assert set(lock_fields.keys()) == set(stop_fields.keys()) == {1}
+
+
+# ---------------------------------------------------------------------------
+# Lock error context
+# ---------------------------------------------------------------------------
+
+
+class TestLockErrorContext:
+    def test_empty_data(self):
+        assert _lock_error_context(b"") == ""
+
+    def test_no_lock_error(self):
+        # Response with only InvocationResponse in field 1, no field 2
+        inner = _encode_field_varint(3, 6)  # status = SUCCESS
+        data = _encode_field_bytes(1, inner)
+        assert _lock_error_context(data) == ""
+
+    def test_door_open_error(self):
+        # LockResponse with lockError=1 (LOCK_ERROR_DOOR_OPEN) in field 2
+        inner = _encode_field_varint(3, 11)  # status = INVOCATION_SPECIFIC_ERROR
+        data = _encode_field_bytes(1, inner) + _encode_field_varint(2, 1)
+        assert _lock_error_context(data) == "a door is open"
+
+    def test_unspecified_error(self):
+        # lockError=0 (LOCK_ERROR_UNSPECIFIED) should return empty
+        inner = _encode_field_varint(3, 6)
+        data = _encode_field_bytes(1, inner) + _encode_field_varint(2, 0)
+        assert _lock_error_context(data) == ""
+
+    def test_unknown_error_code(self):
+        # Unknown lockError value should return generic message
+        inner = _encode_field_varint(3, 11)
+        data = _encode_field_bytes(1, inner) + _encode_field_varint(2, 99)
+        assert _lock_error_context(data) == "lock error (code 99)"

@@ -14,6 +14,7 @@ PLATFORMS: list[Platform] = [
     Platform.NUMBER,
     Platform.TIME,
     Platform.SWITCH,
+    Platform.LOCK,
     Platform.DEVICE_TRACKER,
     Platform.BINARY_SENSOR,
 ]

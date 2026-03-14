@@ -16,7 +16,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ALARM_STATUS_MAP, DOMAIN, LOCK_STATUS_MAP, OPEN_STATUS_MAP
+from .const import ALARM_STATUS_MAP, DOMAIN, OPEN_STATUS_MAP
 from .coordinator import PolestarCoordinator
 
 
@@ -30,17 +30,6 @@ class PolestarBinarySensorDescription(BinarySensorEntityDescription):
 # ---------------------------------------------------------------------------
 # is_on helpers
 # ---------------------------------------------------------------------------
-
-
-def _lock_is_on(data: dict, vin: str) -> bool | None:
-    """Central lock: True=Unlocked, False=Locked, None=Unknown."""
-    exterior = data.get("exterior", {}).get(vin)
-    if exterior is None:
-        return None
-    val = exterior.get("central_lock")
-    if val is None or val == 0:
-        return None
-    return val != 2  # anything other than LOCKED(2) is "on"
 
 
 def _open_status_is_on(key: str) -> Callable[[dict, str], bool | None]:
@@ -74,12 +63,6 @@ def _alarm_is_on(data: dict, vin: str) -> bool | None:
 # ---------------------------------------------------------------------------
 
 BINARY_SENSOR_DESCRIPTIONS: tuple[PolestarBinarySensorDescription, ...] = (
-    PolestarBinarySensorDescription(
-        key="central_lock",
-        translation_key="central_lock",
-        device_class=BinarySensorDeviceClass.LOCK,
-        is_on_fn=_lock_is_on,
-    ),
     PolestarBinarySensorDescription(
         key="front_left_door",
         translation_key="front_left_door",
@@ -172,7 +155,6 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[PolestarBinarySensorDescription, ...] = (
 
 # Mapping from description key to the appropriate status map for raw_state labels
 _STATUS_MAP_BY_KEY: dict[str, dict[int, str | None]] = {
-    "central_lock": LOCK_STATUS_MAP,
     "alarm": ALARM_STATUS_MAP,
 }
 

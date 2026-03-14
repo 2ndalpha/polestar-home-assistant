@@ -111,12 +111,6 @@ INVOCATION_STATUS_MAP: dict[int, str] = {
 _INVOCATION_INTERMEDIATE_STATUSES = {1, 4}  # SENT, DELIVERED
 
 # Exterior state enums (ExteriorService)
-LOCK_STATUS_MAP: dict[int, str | None] = {
-    0: None,
-    1: "Unlocked",
-    2: "Locked",
-}
-
 OPEN_STATUS_MAP: dict[int, str | None] = {
     0: None,
     1: "Open",
