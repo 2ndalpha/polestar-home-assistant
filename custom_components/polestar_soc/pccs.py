@@ -183,14 +183,19 @@ def _parse_target_soc_response(data: bytes) -> dict:
 def _parse_charge_timer_response(data: bytes) -> dict:
     """Parse GetGlobalChargeTimerResponse.
 
-    Response structure (verified against live API 2026-03-11):
-        field 1: globalChargeTimer (message)     — current timer data
-        field 3: updatedAt (varint)              — server timestamp
+    Response structure (verified against live API 2026-03-14):
+        field 1: globalChargeTimer (message)        — baseline timer data
+        field 2: pendingGlobalChargeTimer (message)  — most recent write (if any)
+        field 3: updatedAt (varint)                  — server timestamp
+
+    When a write has been issued, field 2 holds the pending values while
+    field 1 retains the baseline.  We prefer field 2 when present so that
+    the UI reflects the most recently requested state immediately.
 
     GlobalChargeTimer sub-message:
         field 1: startTime (TimeOfDay message)   — {1: hours, 2: minutes, 3: tz}
         field 2: endTime (TimeOfDay message)     — {1: hours, 2: minutes, 3: tz}
-        field 3: isDepartureTimeActive (bool)
+        field 3: activated (bool)
         field 4: metadata (message)              — {1: id, 2: timestamp, 3: source}
     """
     empty = {
@@ -205,8 +210,8 @@ def _parse_charge_timer_response(data: bytes) -> dict:
 
     envelope = _decode_message(data)
 
-    # GlobalChargeTimer is in field 1 of the response envelope
-    timer = _get_submessage(envelope, 1)
+    # Prefer pending timer (field 2) over baseline (field 1)
+    timer = _get_submessage(envelope, 2) or _get_submessage(envelope, 1)
     if not timer:
         return empty
 
