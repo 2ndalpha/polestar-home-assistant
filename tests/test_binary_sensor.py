@@ -112,6 +112,40 @@ class TestExtraStateAttributes:
         assert sensor.extra_state_attributes is None
 
 
+class TestAvailabilityIsOn:
+    def test_available(self, sample_coordinator_data, sample_vehicle):
+        sensor = _make_sensor(sample_coordinator_data, sample_vehicle, VIN, "vehicle_available")
+        assert sensor.is_on is True  # fixture has AVAILABLE(1)
+
+    def test_unavailable(self, sample_coordinator_data, sample_vehicle):
+        sample_coordinator_data["availability"][VIN]["availability_status"] = 2  # UNAVAILABLE
+        sensor = _make_sensor(sample_coordinator_data, sample_vehicle, VIN, "vehicle_available")
+        assert sensor.is_on is False
+
+    def test_unspecified(self, sample_coordinator_data, sample_vehicle):
+        sample_coordinator_data["availability"][VIN]["availability_status"] = None
+        sensor = _make_sensor(sample_coordinator_data, sample_vehicle, VIN, "vehicle_available")
+        assert sensor.is_on is None
+
+    def test_no_availability_data(self, sample_coordinator_data, sample_vehicle):
+        sample_coordinator_data["availability"] = {}
+        sensor = _make_sensor(sample_coordinator_data, sample_vehicle, VIN, "vehicle_available")
+        assert sensor.is_on is None
+
+    def test_extra_attrs_with_reason(self, sample_coordinator_data, sample_vehicle):
+        sample_coordinator_data["availability"][VIN]["unavailable_reason"] = 2  # POWER_SAVING
+        sensor = _make_sensor(sample_coordinator_data, sample_vehicle, VIN, "vehicle_available")
+        assert sensor.extra_state_attributes == {"unavailable_reason": "Power saving mode"}
+
+    def test_extra_attrs_no_reason(self, sample_coordinator_data, sample_vehicle):
+        sensor = _make_sensor(sample_coordinator_data, sample_vehicle, VIN, "vehicle_available")
+        assert sensor.extra_state_attributes == {"unavailable_reason": None}
+
+    def test_device_class_connectivity(self, sample_coordinator_data, sample_vehicle):
+        sensor = _make_sensor(sample_coordinator_data, sample_vehicle, VIN, "vehicle_available")
+        assert sensor.device_class == BinarySensorDeviceClass.CONNECTIVITY
+
+
 class TestNoneHandling:
     def test_none_when_no_coordinator_data(self, sample_vehicle):
         sensor = _make_sensor(None, sample_vehicle, VIN, "front_left_door")

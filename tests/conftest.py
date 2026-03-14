@@ -117,6 +117,16 @@ def sample_charge_timer():
 
 
 @pytest.fixture
+def sample_availability():
+    """Return a sample availability state dict (as returned by CepClient)."""
+    return {
+        "availability_status": 1,  # AVAILABLE
+        "unavailable_reason": None,
+        "usage_mode": 2,  # INACTIVE
+    }
+
+
+@pytest.fixture
 def sample_coordinator_data(
     sample_vehicle,
     sample_battery,
@@ -125,6 +135,7 @@ def sample_coordinator_data(
     sample_cep_battery,
     sample_location,
     sample_exterior,
+    sample_availability,
 ):
     """Return a full coordinator data dict combining all sources."""
     vin = sample_vehicle["vin"]
@@ -138,4 +149,5 @@ def sample_coordinator_data(
         "cep_battery": {vin: sample_cep_battery},
         "location": {vin: sample_location},
         "exterior": {vin: sample_exterior},
+        "availability": {vin: sample_availability},
     }
