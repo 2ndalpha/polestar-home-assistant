@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import PolestarCoordinator
+from .pccs import PccsError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ class PolestarChargeTimeEntity(CoordinatorEntity[PolestarCoordinator], TimeEntit
         so we read the current opposite value from coordinator data.
         """
         timer_data = self.coordinator.data.get("charge_timer", {}).get(self._vin) or {}
+        activated = timer_data.get("is_departure_active", True)
 
         if self._time_key == "start":
             start_h, start_m = value.hour, value.minute
@@ -121,7 +123,8 @@ class PolestarChargeTimeEntity(CoordinatorEntity[PolestarCoordinator], TimeEntit
                 start_m,
                 end_h,
                 end_m,
+                activated,
             )
-        except grpc.RpcError as err:
+        except (grpc.RpcError, PccsError) as err:
             raise HomeAssistantError(f"Failed to set charge timer: {err}") from err
         await self.coordinator.async_request_refresh()

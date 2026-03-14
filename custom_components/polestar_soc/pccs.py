@@ -14,6 +14,7 @@ import logging
 import uuid
 
 import grpc
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import PCCS_API_HOST
 from .proto import (
@@ -28,6 +29,19 @@ from .proto import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# ResponseStatus enum values from SetGlobalChargeTimerResponse
+_RESPONSE_STATUS_NAMES = {
+    0: "UNKNOWN_ERROR",
+    1: "SUCCESS",
+    2: "VALIDATION_ERROR",
+    3: "INTERNAL_ERROR",
+}
+
+
+class PccsError(HomeAssistantError):
+    """Error returned by the PCCS server (non-SUCCESS response status)."""
+
 
 # gRPC service method paths
 _SVC_TARGET_SOC = "/pccs.chronos.services.v1.TargetSocService"
@@ -105,11 +119,27 @@ def _build_set_charge_timer_request(
     start_min: int,
     end_hour: int,
     end_min: int,
+    activated: bool = True,
 ) -> bytes:
-    """Build SetGlobalChargeTimer request bytes."""
+    """Build SetGlobalChargeTimer request bytes.
+
+    Args:
+        vin: Vehicle identification number.
+        start_hour: Charging start hour (0-23).
+        start_min: Charging start minute (0-59).
+        end_hour: Charging end hour (0-23).
+        end_min: Charging end minute (0-59).
+        activated: Whether the charge timer is enabled (default True).
+    """
+    # Build GlobalChargeTimer sub-message: {1: start, 2: stop, 3: activated}
+    timer = b""
+    timer += _encode_field_bytes(1, _build_time_of_day(start_hour, start_min))
+    timer += _encode_field_bytes(2, _build_time_of_day(end_hour, end_min))
+    if activated:
+        timer += _encode_field_varint(3, 1)
+
     msg = _encode_field_bytes(1, _build_chronos_request(vin))
-    msg += _encode_field_bytes(2, _build_time_of_day(start_hour, start_min))
-    msg += _encode_field_bytes(3, _build_time_of_day(end_hour, end_min))
+    msg += _encode_field_bytes(2, timer)
     return msg
 
 
@@ -151,7 +181,7 @@ def _parse_target_soc_response(data: bytes) -> dict:
 
 
 def _parse_charge_timer_response(data: bytes) -> dict:
-    """Parse GetGlobalChargeTimerStream / SetGlobalChargeTimer response.
+    """Parse GetGlobalChargeTimerResponse.
 
     Response structure (verified against live API 2026-03-11):
         field 1: globalChargeTimer (message)     — current timer data
@@ -189,6 +219,37 @@ def _parse_charge_timer_response(data: bytes) -> dict:
         "end_hour": _get_int(end_time, 1) if end_time else None,
         "end_min": _get_int(end_time, 2) if end_time else None,
         "is_departure_active": _get_bool(timer, 3),
+    }
+
+
+def _parse_set_charge_timer_response(data: bytes) -> dict:
+    """Parse SetGlobalChargeTimerResponse.
+
+    Response structure:
+        field 1: id (string)           — echoed request UUID
+        field 2: status (varint enum)  — 0=UNKNOWN_ERROR, 1=SUCCESS,
+                                         2=VALIDATION_ERROR, 3=INTERNAL_ERROR
+        field 3: message (string)      — error message text
+        field 4: has_not_changed (bool) — true if values were already set
+    """
+    if not data:
+        return {"id": "", "status": 0, "message": "", "has_not_changed": False}
+
+    fields = _decode_message(data)
+
+    id_val = fields.get(1, [b""])[0]
+    if isinstance(id_val, bytes):
+        id_val = id_val.decode("utf-8", errors="replace")
+
+    msg_val = fields.get(3, [b""])[0]
+    if isinstance(msg_val, bytes):
+        msg_val = msg_val.decode("utf-8", errors="replace")
+
+    return {
+        "id": id_val,
+        "status": _get_int(fields, 2, 0),
+        "message": msg_val,
+        "has_not_changed": _get_bool(fields, 4),
     }
 
 
@@ -338,11 +399,14 @@ class PccsClient:
         start_min: int,
         end_hour: int,
         end_min: int,
+        activated: bool = True,
     ) -> dict:
         """Set the global charge timer for a vehicle.
 
-        SetGlobalChargeTimer is a server-streaming RPC; we take the first response.
         Requires the PCCS 2FA token (customer:attributes:write scope).
+
+        Args:
+            activated: Whether the charge timer should be enabled.
         """
         channel = self._get_channel()
         method = channel.unary_stream(
@@ -350,12 +414,30 @@ class PccsClient:
             request_serializer=_identity_serialize,
             response_deserializer=_identity_deserialize,
         )
-        request = _build_set_charge_timer_request(vin, start_hour, start_min, end_hour, end_min)
+        request = _build_set_charge_timer_request(
+            vin, start_hour, start_min, end_hour, end_min, activated=activated
+        )
         try:
             responses = method(request, metadata=self._write_metadata(vin), timeout=30)
             for response in responses:
-                return _parse_charge_timer_response(response)
-            return _parse_charge_timer_response(b"")
+                result = _parse_set_charge_timer_response(response)
+                break
+            else:
+                result = _parse_set_charge_timer_response(b"")
         except grpc.RpcError as err:
             _LOGGER.warning("PCCS SetGlobalChargeTimer failed: %s", err)
             raise
+
+        status = result.get("status", 0)
+        if status != 1:  # Not SUCCESS
+            status_name = _RESPONSE_STATUS_NAMES.get(status, f"STATUS_{status}")
+            server_msg = result.get("message", "")
+            msg = f"SetGlobalChargeTimer failed: {status_name}"
+            if server_msg:
+                msg += f" - {server_msg}"
+            raise PccsError(msg)
+
+        if result.get("has_not_changed"):
+            _LOGGER.debug("SetGlobalChargeTimer: values unchanged")
+
+        return result
