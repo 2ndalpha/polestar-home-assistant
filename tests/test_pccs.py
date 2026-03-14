@@ -12,6 +12,7 @@ from custom_components.polestar_soc.pccs import (
     _build_set_target_soc_request,
     _build_time_of_day,
     _parse_charge_timer_response,
+    _parse_set_charge_timer_response,
     _parse_target_soc_response,
 )
 from custom_components.polestar_soc.proto import (
@@ -253,13 +254,46 @@ class TestBuildTimeOfDay:
 
 
 class TestBuildSetChargeTimerRequest:
-    def test_has_start_and_end(self):
+    def test_nested_structure(self):
         data = _build_set_charge_timer_request("TESTVIN123", 22, 0, 6, 30)
         fields = _decode_message(data)
-        # Field 1 is ChronosRequest, 2 is start time, 3 is end time
+        # Field 1 is ChronosRequest, field 2 is GlobalChargeTimer sub-message
         assert 1 in fields
         assert 2 in fields
-        assert 3 in fields
+        # Times should NOT be at top level (old bug: fields 2 and 3 were times)
+        assert 3 not in fields
+
+        # Decode the GlobalChargeTimer sub-message
+        timer = _get_submessage(fields, 2)
+        assert timer is not None
+        # Field 1 = start DailyTime, field 2 = stop DailyTime, field 3 = activated
+        start = _get_submessage(timer, 1)
+        stop = _get_submessage(timer, 2)
+        assert start is not None
+        assert stop is not None
+        assert _get_int(start, 1) == 22
+        assert _get_int(stop, 1) == 6
+        assert _get_int(stop, 2) == 30
+        # Default activated=True
+        assert _get_bool(timer, 3) is True
+
+    def test_activated_false(self):
+        data = _build_set_charge_timer_request("TESTVIN123", 22, 0, 6, 30, activated=False)
+        fields = _decode_message(data)
+        timer = _get_submessage(fields, 2)
+        assert timer is not None
+        # activated=False → field 3 omitted (proto3 default)
+        assert _get_bool(timer, 3) is False
+
+    def test_midnight_times(self):
+        """Verify 00:00 start/stop times work (zero-value edge case)."""
+        data = _build_set_charge_timer_request("TESTVIN123", 0, 0, 0, 0)
+        fields = _decode_message(data)
+        timer = _get_submessage(fields, 2)
+        assert timer is not None
+        # Start and stop DailyTime messages should still be present (empty = 00:00)
+        assert 1 in timer
+        assert 2 in timer
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +368,46 @@ class TestParseChargeTimerResponse:
         assert result["end_hour"] == 7
         assert result["end_min"] == 0
         assert result["is_departure_active"] is False
+
+
+class TestParseSetChargeTimerResponse:
+    def test_empty_data(self):
+        result = _parse_set_charge_timer_response(b"")
+        assert result["id"] == ""
+        assert result["status"] == 0
+        assert result["message"] == ""
+        assert result["has_not_changed"] is False
+
+    def test_success(self):
+        data = (
+            _encode_field_bytes(1, b"test-uuid")
+            + _encode_field_varint(2, 1)  # SUCCESS
+        )
+        result = _parse_set_charge_timer_response(data)
+        assert result["id"] == "test-uuid"
+        assert result["status"] == 1
+        assert result["message"] == ""
+        assert result["has_not_changed"] is False
+
+    def test_validation_error(self):
+        data = (
+            _encode_field_bytes(1, b"test-uuid")
+            + _encode_field_varint(2, 2)  # VALIDATION_ERROR
+            + _encode_field_bytes(3, b"Invalid time range")
+        )
+        result = _parse_set_charge_timer_response(data)
+        assert result["status"] == 2
+        assert result["message"] == "Invalid time range"
+
+    def test_has_not_changed(self):
+        data = (
+            _encode_field_bytes(1, b"test-uuid")
+            + _encode_field_varint(2, 1)  # SUCCESS
+            + _encode_field_varint(4, 1)  # has_not_changed=True
+        )
+        result = _parse_set_charge_timer_response(data)
+        assert result["status"] == 1
+        assert result["has_not_changed"] is True
 
 
 # ---------------------------------------------------------------------------
