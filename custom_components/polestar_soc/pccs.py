@@ -686,6 +686,4 @@ class PccsClient:
         Requires the PCCS 2FA token (customer:attributes:write scope).
         """
         request = _build_unlock_request(vin)
-        return self._send_invocation(
-            vin, _METHOD_UNLOCK, request, command_name="Unlock"
-        )
+        return self._send_invocation(vin, _METHOD_UNLOCK, request, command_name="Unlock")
