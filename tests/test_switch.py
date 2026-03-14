@@ -25,18 +25,6 @@ def _make_switch(
     return PolestarChargeTimerSwitch(coordinator, vehicle, vin)
 
 
-@pytest.fixture
-def sample_charge_timer():
-    """Return a sample charge timer dict."""
-    return {
-        "start_hour": 22,
-        "start_min": 0,
-        "end_hour": 6,
-        "end_min": 30,
-        "is_departure_active": True,
-    }
-
-
 class TestIsOn:
     def test_active(self, sample_coordinator_data, sample_vehicle, sample_charge_timer):
         sample_coordinator_data["charge_timer"][VIN] = sample_charge_timer
