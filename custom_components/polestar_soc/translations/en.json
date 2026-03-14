@@ -88,6 +88,9 @@
     "switch": {
       "charging_timer": {
         "name": "Charging timer"
+      },
+      "climate": {
+        "name": "Climate"
       }
     },
     "device_tracker": {

@@ -37,6 +37,12 @@ def _encode_field_bytes(field_number: int, data: bytes) -> bytes:
     return _encode_varint(tag) + _encode_varint(len(data)) + data
 
 
+def _encode_field_fixed32(field_number: int, value: float) -> bytes:
+    """Encode a float field as fixed32 (tag + 4 bytes, IEEE 754 single-precision)."""
+    tag = (field_number << 3) | 5  # wire type 5
+    return _encode_varint(tag) + struct.pack("<f", value)
+
+
 # ---------------------------------------------------------------------------
 # Decoding
 # ---------------------------------------------------------------------------
