@@ -432,7 +432,10 @@ class PolestarCoordinator(DataUpdateCoordinator):
             access_token=self.api.access_token or "",
             write_access_token=self._pccs_api.access_token,
         )
-        self.cep = CepClient(self.api.access_token or "")
+        self.cep = CepClient(
+            access_token=self.api.access_token or "",
+            write_access_token=self._pccs_api.access_token,
+        )
         self._email: str = entry.data["email"]
         self._password: str = entry.data["password"]
 
@@ -602,6 +605,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
         self.pccs.access_token = self.api.access_token or ""
         self.pccs.write_access_token = self._pccs_api.access_token
         self.cep.access_token = self.api.access_token or ""
+        self.cep.write_access_token = self._pccs_api.access_token
 
     def close(self) -> None:
         """Close gRPC channels."""

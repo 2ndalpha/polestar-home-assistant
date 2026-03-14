@@ -1,9 +1,10 @@
 """CEP (Volvo Connected Experience Platform) gRPC client.
 
 Communicates with the Volvo CEP gRPC API at cepmobtoken.eu.prod.c3.volvocars.com
-for reading vehicle state data (climate status, battery, etc.).
+for reading vehicle state data (climate status, battery, etc.) and sending
+vehicle commands (window control) via the InvocationService.
 
-Uses the same Polestar OAuth access token as the rest of the integration.
+Uses the web OAuth access token for reads and the PCCS 2FA token for writes.
 """
 
 from __future__ import annotations
@@ -11,15 +12,19 @@ from __future__ import annotations
 import logging
 
 import grpc
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import (
+    _INVOCATION_INTERMEDIATE_STATUSES,
     CEP_API_HOST,
     CLIMATE_RUNNING_STATUS_MAP,
     HEATING_INTENSITY_MAP,
+    INVOCATION_STATUS_MAP,
 )
 from .proto import (
     _decode_message,
     _encode_field_bytes,
+    _encode_field_varint,
     _get_double,
     _get_int,
     _get_submessage,
@@ -37,6 +42,8 @@ _METHOD_GET_CLIMATE = (
 _METHOD_GET_BATTERY = "/services.vehiclestates.battery.BatteryService/GetLatestBattery"
 _METHOD_GET_EXTERIOR = "/services.vehiclestates.exterior.ExteriorService/GetLatestExterior"
 _METHOD_GET_LOCATION = "/dtlinternet.DtlInternetService/GetLastKnownLocation"
+_SVC_INVOCATION = "/invocation.InvocationService"
+_METHOD_WINDOW_CONTROL = f"{_SVC_INVOCATION}/WindowControl"
 
 # BatteryState field numbers captured in raw_fields for debugging.
 _RAW_BATTERY_FIELD_NUMBERS = (5, 7, 8, 17, 26, 28)
@@ -55,6 +62,75 @@ def _build_vin_request(vin: str) -> bytes:
 def _build_location_request(vin: str) -> bytes:
     """Build a request with VIN as field 1 (DtlInternetService uses field 1, not field 2)."""
     return _encode_field_bytes(1, vin.encode("utf-8"))
+
+
+def _build_cep_invocation_request(vin: str) -> bytes:
+    """Build a CEP InvocationRequest sub-message.
+
+    CEP InvocationRequest (invocation.InvocationRequest):
+        field 1: vin (string)
+
+    This is simpler than the PCCS InvocationRequest which also has
+    id (UUID) and expirationTimestamp fields.
+    """
+    return _encode_field_bytes(1, vin.encode("utf-8"))
+
+
+def _build_window_control_request(vin: str, control_type: int) -> bytes:
+    """Build WindowControlRequest bytes for CEP.
+
+    WindowControlRequest:
+        field 1: InvocationRequest (message) — CEP format (VIN only)
+        field 2: windowsControl (WindowControlType enum)
+            0 = WINDOW_CONTROL_TYPE_UNSPECIFIED
+            1 = OPEN_ALL
+            2 = CLOSE_ALL
+    """
+    msg = _encode_field_bytes(1, _build_cep_invocation_request(vin))
+    msg += _encode_field_varint(2, control_type)
+    return msg
+
+
+def _parse_invocation_response(data: bytes) -> dict:
+    """Parse a CEP InvocationResponse from a command response.
+
+    Response wrapper (e.g. WindowControlResponse):
+        field 1: InvocationResponse (message)
+
+    InvocationResponse:
+        field 1: id (string)
+        field 2: vin (string)
+        field 3: status (varint enum)
+        field 4: message (string)
+        field 5: timestamp (int64)
+    """
+    empty = {"id": "", "vin": "", "status": 0, "message": ""}
+    if not data:
+        return empty
+
+    outer = _decode_message(data)
+    inner = _get_submessage(outer, 1)
+    if inner is None:
+        return empty
+
+    id_val = inner.get(1, [b""])[0]
+    if isinstance(id_val, bytes):
+        id_val = id_val.decode("utf-8", errors="replace")
+
+    vin_val = inner.get(2, [b""])[0]
+    if isinstance(vin_val, bytes):
+        vin_val = vin_val.decode("utf-8", errors="replace")
+
+    msg_val = inner.get(4, [b""])[0]
+    if isinstance(msg_val, bytes):
+        msg_val = msg_val.decode("utf-8", errors="replace")
+
+    return {
+        "id": id_val,
+        "vin": vin_val,
+        "status": _get_int(inner, 3, 0),
+        "message": msg_val,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -240,11 +316,20 @@ def _parse_location_response(data: bytes) -> dict:
 # ---------------------------------------------------------------------------
 
 
-class CepClient:
-    """Client for the Volvo CEP gRPC API."""
+class CepError(HomeAssistantError):
+    """Error returned by a CEP InvocationService command."""
 
-    def __init__(self, access_token: str) -> None:
+
+class CepClient:
+    """Client for the Volvo CEP gRPC API.
+
+    Uses ``access_token`` for read operations (web client token) and
+    ``write_access_token`` for command operations (PCCS 2FA token).
+    """
+
+    def __init__(self, access_token: str, write_access_token: str | None = None) -> None:
         self._access_token = access_token
+        self._write_access_token = write_access_token
         self._channel: grpc.Channel | None = None
 
     @property
@@ -255,6 +340,14 @@ class CepClient:
     def access_token(self, value: str) -> None:
         self._access_token = value
 
+    @property
+    def write_access_token(self) -> str | None:
+        return self._write_access_token
+
+    @write_access_token.setter
+    def write_access_token(self, value: str | None) -> None:
+        self._write_access_token = value
+
     def _get_channel(self) -> grpc.Channel:
         if self._channel is None:
             credentials = grpc.ssl_channel_credentials()
@@ -264,6 +357,20 @@ class CepClient:
     def _metadata(self, vin: str) -> list[tuple[str, str]]:
         return [
             ("authorization", f"Bearer {self._access_token}"),
+            ("vin", vin),
+        ]
+
+    def _write_metadata(self, vin: str) -> list[tuple[str, str]]:
+        """Build gRPC call metadata for write/command operations.
+
+        Uses the write token (PCCS 2FA) when available, otherwise falls
+        back to the regular read token.
+        """
+        token = self._write_access_token or self._access_token
+        if not self._write_access_token:
+            _LOGGER.debug("No CEP write token available, falling back to web token")
+        return [
+            ("authorization", f"Bearer {token}"),
             ("vin", vin),
         ]
 
@@ -333,3 +440,79 @@ class CepClient:
         except grpc.RpcError as err:
             _LOGGER.warning("CEP GetLastKnownLocation failed: %s", err)
             raise
+
+    # -- Window Control (InvocationService) ---------------------------------
+
+    def _send_invocation(
+        self,
+        vin: str,
+        method_path: str,
+        request: bytes,
+        *,
+        command_name: str = "Command",
+    ) -> dict:
+        """Send a CEP InvocationService command and wait for terminal status.
+
+        CEP InvocationService methods are SERVER_STREAMING. The stream emits
+        intermediate statuses (SENT, DELIVERED) before a terminal status
+        (SUCCESS or an error). We iterate until we reach a terminal status.
+
+        The server may cancel the stream before SUCCESS arrives. If we
+        received DELIVERED before cancellation, we treat it as success.
+        """
+        channel = self._get_channel()
+        method = channel.unary_stream(
+            method_path,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        result = _parse_invocation_response(b"")
+        try:
+            responses = method(request, metadata=self._write_metadata(vin), timeout=60)
+            for response in responses:
+                result = _parse_invocation_response(response)
+                status = result.get("status", 0)
+                if status not in _INVOCATION_INTERMEDIATE_STATUSES:
+                    break
+        except grpc.RpcError as err:
+            if result.get("status") == 4:  # DELIVERED
+                _LOGGER.debug(
+                    "CEP %s stream cancelled after DELIVERED — treating as success",
+                    method_path,
+                )
+                return result
+            _LOGGER.warning("CEP %s failed: %s", method_path, err)
+            raise
+
+        status = result.get("status", 0)
+        if status not in (4, 6):  # Not DELIVERED or SUCCESS
+            status_name = INVOCATION_STATUS_MAP.get(status, f"STATUS_{status}")
+            server_msg = result.get("message", "")
+            msg = f"{command_name} failed: {status_name}"
+            if server_msg:
+                msg += f" - {server_msg}"
+            raise CepError(msg)
+
+        return result
+
+    def window_open(self, vin: str) -> dict:
+        """Open all vehicle windows.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+        WindowControl is only available on CEP, not PCCS.
+        """
+        request = _build_window_control_request(vin, 1)  # OPEN_ALL
+        return self._send_invocation(
+            vin, _METHOD_WINDOW_CONTROL, request, command_name="Window control"
+        )
+
+    def window_close(self, vin: str) -> dict:
+        """Close all vehicle windows.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+        WindowControl is only available on CEP, not PCCS.
+        """
+        request = _build_window_control_request(vin, 2)  # CLOSE_ALL
+        return self._send_invocation(
+            vin, _METHOD_WINDOW_CONTROL, request, command_name="Window control"
+        )
