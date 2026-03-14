@@ -13,6 +13,7 @@ import datetime
 import logging
 import time
 import uuid
+from collections.abc import Callable
 
 import grpc
 from homeassistant.exceptions import HomeAssistantError
@@ -56,6 +57,8 @@ _METHOD_GET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/GetGlobalChargeTimerStream"
 _METHOD_SET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/SetGlobalChargeTimer"
 _METHOD_CLIMATIZATION_START = f"{_SVC_INVOCATION}/ClimatizationStart"
 _METHOD_CLIMATIZATION_STOP = f"{_SVC_INVOCATION}/ClimatizationStop"
+_METHOD_LOCK = f"{_SVC_INVOCATION}/Lock"
+_METHOD_UNLOCK = f"{_SVC_INVOCATION}/Unlock"
 
 _INVOCATION_EXPIRY_MS = 120_000  # command expiry: 120 seconds
 
@@ -181,6 +184,46 @@ def _build_climatization_start_request(vin: str, temperature: float = 22.0) -> b
 def _build_climatization_stop_request(vin: str) -> bytes:
     """Build ClimatizationStopRequest bytes."""
     return _encode_field_bytes(1, _build_invocation_request(vin))
+
+
+def _build_lock_request(vin: str, lock_type: int = 0) -> bytes:
+    """Build LockRequest bytes.
+
+    LockRequest:
+        field 1: InvocationRequest (message)
+        field 2: lockType (LockType enum: 0=LOCK, 1=LOCK_REDUCED_GUARD)
+    """
+    msg = _encode_field_bytes(1, _build_invocation_request(vin))
+    if lock_type:
+        msg += _encode_field_varint(2, lock_type)
+    return msg
+
+
+def _build_unlock_request(vin: str) -> bytes:
+    """Build UnlockRequest bytes.
+
+    Structurally identical to ClimatizationStopRequest —
+    InvocationRequest in field 1, no additional fields.
+    """
+    return _encode_field_bytes(1, _build_invocation_request(vin))
+
+
+def _lock_error_context(data: bytes) -> str:
+    """Extract lock-specific error context from a LockResponse.
+
+    LockResponse field 2 is lockError (LockError enum):
+        0 = LOCK_ERROR_UNSPECIFIED
+        1 = LOCK_ERROR_DOOR_OPEN
+    """
+    if not data:
+        return ""
+    outer = _decode_message(data)
+    lock_error = _get_int(outer, 2, 0)
+    if lock_error == 1:
+        return "a door is open"
+    if lock_error > 1:
+        return f"lock error (code {lock_error})"
+    return ""
 
 
 def _parse_invocation_response(data: bytes) -> dict:
@@ -531,7 +574,15 @@ class PccsClient:
 
     # -- Climate (InvocationService) -----------------------------------------
 
-    def _send_invocation(self, vin: str, method_path: str, request: bytes) -> dict:
+    def _send_invocation(
+        self,
+        vin: str,
+        method_path: str,
+        request: bytes,
+        *,
+        command_name: str = "Command",
+        error_context_fn: Callable[[bytes], str] | None = None,
+    ) -> dict:
         """Send an InvocationService command and wait for terminal status.
 
         InvocationService methods are SERVER_STREAMING.  The stream emits
@@ -541,6 +592,11 @@ class PccsClient:
         The server may cancel the stream (~5s timeout) before SUCCESS
         arrives.  If we received DELIVERED before cancellation, the command
         was accepted by the vehicle and we treat it as success.
+
+        Args:
+            command_name: Human-readable name for error messages.
+            error_context_fn: Optional callback that receives the raw terminal
+                response bytes and returns additional error context text.
         """
         channel = self._get_channel()
         method = channel.unary_stream(
@@ -549,9 +605,11 @@ class PccsClient:
             response_deserializer=_identity_deserialize,
         )
         result = _parse_invocation_response(b"")
+        last_raw = b""
         try:
             responses = method(request, metadata=self._write_metadata(vin), timeout=60)
             for response in responses:
+                last_raw = response
                 result = _parse_invocation_response(response)
                 status = result.get("status", 0)
                 if status not in _INVOCATION_INTERMEDIATE_STATUSES:
@@ -572,9 +630,13 @@ class PccsClient:
         if status not in (4, 6):  # Not DELIVERED or SUCCESS
             status_name = INVOCATION_STATUS_MAP.get(status, f"STATUS_{status}")
             server_msg = result.get("message", "")
-            msg = f"Climatization command failed: {status_name}"
+            msg = f"{command_name} failed: {status_name}"
             if server_msg:
                 msg += f" - {server_msg}"
+            if error_context_fn and last_raw:
+                ctx = error_context_fn(last_raw)
+                if ctx:
+                    msg += f" ({ctx})"
             raise PccsError(msg)
 
         return result
@@ -585,7 +647,9 @@ class PccsClient:
         Requires the PCCS 2FA token (customer:attributes:write scope).
         """
         request = _build_climatization_start_request(vin, temperature)
-        return self._send_invocation(vin, _METHOD_CLIMATIZATION_START, request)
+        return self._send_invocation(
+            vin, _METHOD_CLIMATIZATION_START, request, command_name="Climatization"
+        )
 
     def climatization_stop(self, vin: str) -> dict:
         """Stop vehicle climate pre-conditioning.
@@ -593,4 +657,35 @@ class PccsClient:
         Requires the PCCS 2FA token (customer:attributes:write scope).
         """
         request = _build_climatization_stop_request(vin)
-        return self._send_invocation(vin, _METHOD_CLIMATIZATION_STOP, request)
+        return self._send_invocation(
+            vin, _METHOD_CLIMATIZATION_STOP, request, command_name="Climatization"
+        )
+
+    # -- Lock/Unlock (InvocationService) ------------------------------------
+
+    def lock(self, vin: str, lock_type: int = 0) -> dict:
+        """Lock the vehicle.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+
+        Args:
+            lock_type: LockType enum (0=LOCK, 1=LOCK_REDUCED_GUARD).
+        """
+        request = _build_lock_request(vin, lock_type)
+        return self._send_invocation(
+            vin,
+            _METHOD_LOCK,
+            request,
+            command_name="Lock",
+            error_context_fn=_lock_error_context,
+        )
+
+    def unlock(self, vin: str) -> dict:
+        """Unlock the vehicle.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+        """
+        request = _build_unlock_request(vin)
+        return self._send_invocation(
+            vin, _METHOD_UNLOCK, request, command_name="Unlock"
+        )

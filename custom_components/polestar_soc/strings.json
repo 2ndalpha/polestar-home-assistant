@@ -93,15 +93,17 @@
         "name": "Climate"
       }
     },
+    "lock": {
+      "door_lock": {
+        "name": "Door lock"
+      }
+    },
     "device_tracker": {
       "location": {
         "name": "Location"
       }
     },
     "binary_sensor": {
-      "central_lock": {
-        "name": "Central lock"
-      },
       "front_left_door": {
         "name": "Front left door"
       },
