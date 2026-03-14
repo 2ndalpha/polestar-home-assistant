@@ -105,6 +105,18 @@ def sample_location():
 
 
 @pytest.fixture
+def sample_charge_timer():
+    """Return a sample charge timer dict."""
+    return {
+        "start_hour": 22,
+        "start_min": 0,
+        "end_hour": 6,
+        "end_min": 30,
+        "is_departure_active": True,
+    }
+
+
+@pytest.fixture
 def sample_coordinator_data(
     sample_vehicle,
     sample_battery,

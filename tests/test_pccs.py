@@ -354,6 +354,28 @@ class TestParseChargeTimerResponse:
         assert result["end_min"] == 0
         assert result["is_departure_active"] is False
 
+    def test_pending_timer_preferred_over_baseline(self):
+        """Field 2 (pending) should be preferred over field 1 (baseline)."""
+        baseline_start = _build_time_of_day(22, 0)
+        baseline_end = _build_time_of_day(6, 0)
+        baseline = _encode_field_bytes(1, baseline_start) + _encode_field_bytes(2, baseline_end)
+
+        pending_start = _build_time_of_day(23, 30)
+        pending_end = _build_time_of_day(7, 15)
+        pending = (
+            _encode_field_bytes(1, pending_start)
+            + _encode_field_bytes(2, pending_end)
+            + _encode_field_varint(3, 1)  # activated=True
+        )
+
+        data = _encode_field_bytes(1, baseline) + _encode_field_bytes(2, pending)
+        result = _parse_charge_timer_response(data)
+        assert result["start_hour"] == 23
+        assert result["start_min"] == 30
+        assert result["end_hour"] == 7
+        assert result["end_min"] == 15
+        assert result["is_departure_active"] is True
+
     def test_with_timezone_in_time_of_day(self):
         """TimeOfDay may include a timezone sub-message in field 3."""
         # Build TimeOfDay with extra field 3 (timezone offset sub-message)

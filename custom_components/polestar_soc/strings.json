@@ -85,6 +85,11 @@
         "name": "Charging end time"
       }
     },
+    "switch": {
+      "charging_timer": {
+        "name": "Charging timer"
+      }
+    },
     "device_tracker": {
       "location": {
         "name": "Location"
