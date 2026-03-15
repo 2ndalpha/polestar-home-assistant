@@ -121,6 +121,29 @@ def _get_submessage(fields: dict[int, list], field_number: int) -> dict[int, lis
     return None
 
 
+def _get_string(fields: dict[int, list], field_number: int, default: str = "") -> str:
+    """Extract and decode a UTF-8 string from a length-delimited field."""
+    vals = fields.get(field_number)
+    if vals and isinstance(vals[0], (bytes, bytearray)):
+        return vals[0].decode("utf-8", errors="replace")
+    return default
+
+
+def _get_float(fields: dict[int, list], field_number: int) -> float | None:
+    """Extract a float (IEEE 754) from a fixed32 field.
+
+    _decode_message stores wire type 5 as uint32.  This helper reinterprets
+    the raw bits as a single-precision float.
+    """
+    vals = fields.get(field_number)
+    if not vals:
+        return None
+    raw = vals[0]
+    if isinstance(raw, int):
+        return struct.unpack("<f", struct.pack("<I", raw))[0]
+    return None
+
+
 def _get_double(fields: dict[int, list], field_number: int) -> float | None:
     """Extract a double (IEEE 754) from a fixed64 field.
 
@@ -134,6 +157,26 @@ def _get_double(fields: dict[int, list], field_number: int) -> float | None:
     if isinstance(raw, int):
         return struct.unpack("<d", struct.pack("<Q", raw))[0]
     return None
+
+
+def _decode_packed_varints(data: bytes) -> list[int]:
+    """Decode a packed repeated varint field into a list of integers."""
+    values: list[int] = []
+    pos = 0
+    while pos < len(data):
+        value, pos = _decode_varint(data, pos)
+        values.append(value)
+    return values
+
+
+def _encode_packed_varints(field_number: int, values: list[int]) -> bytes:
+    """Encode a list of integers as a packed repeated varint field."""
+    if not values:
+        return b""
+    packed = b""
+    for v in values:
+        packed += _encode_varint(v)
+    return _encode_field_bytes(field_number, packed)
 
 
 # ---------------------------------------------------------------------------
