@@ -207,9 +207,7 @@ class PolestarClimateTimerTimeEntity(CoordinatorEntity[PolestarCoordinator], Tim
 
         Sends the full timer list (replace-all semantics).
         """
-        all_timers = list(
-            self.coordinator.data.get("climate_timers", {}).get(self._vin) or []
-        )
+        all_timers = list(self.coordinator.data.get("climate_timers", {}).get(self._vin) or [])
 
         # Modify the target timer's departure time
         found = False

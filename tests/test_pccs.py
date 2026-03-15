@@ -947,9 +947,7 @@ class TestParseClimateTimersResponse:
     def test_metadata_and_start_date_preserved(self):
         metadata = _encode_field_varint(1, 12345)
         start_date = (
-            _encode_field_varint(1, 2026)
-            + _encode_field_varint(2, 3)
-            + _encode_field_varint(3, 15)
+            _encode_field_varint(1, 2026) + _encode_field_varint(2, 3) + _encode_field_varint(3, 15)
         )
         timer = (
             _encode_field_bytes(1, b"uuid-1")
@@ -1098,9 +1096,17 @@ class TestBuildParkingClimateTimer:
 class TestBuildSetClimateTimersRequest:
     def test_structure(self):
         timers = [
-            {"timer_id": "uuid-1", "index": 1, "hour": 7, "minute": 30,
-             "activated": True, "repeat": False, "weekdays": [],
-             "metadata_raw": None, "start_date_raw": None},
+            {
+                "timer_id": "uuid-1",
+                "index": 1,
+                "hour": 7,
+                "minute": 30,
+                "activated": True,
+                "repeat": False,
+                "weekdays": [],
+                "metadata_raw": None,
+                "start_date_raw": None,
+            },
         ]
         data = _build_set_climate_timers_request("TESTVIN123", timers)
         fields = _decode_message(data)
@@ -1114,12 +1120,28 @@ class TestBuildSetClimateTimersRequest:
 
     def test_multiple_timers(self):
         timers = [
-            {"timer_id": "uuid-1", "index": 1, "hour": 7, "minute": 0,
-             "activated": True, "repeat": False, "weekdays": [],
-             "metadata_raw": None, "start_date_raw": None},
-            {"timer_id": "uuid-2", "index": 2, "hour": 8, "minute": 0,
-             "activated": False, "repeat": False, "weekdays": [],
-             "metadata_raw": None, "start_date_raw": None},
+            {
+                "timer_id": "uuid-1",
+                "index": 1,
+                "hour": 7,
+                "minute": 0,
+                "activated": True,
+                "repeat": False,
+                "weekdays": [],
+                "metadata_raw": None,
+                "start_date_raw": None,
+            },
+            {
+                "timer_id": "uuid-2",
+                "index": 2,
+                "hour": 8,
+                "minute": 0,
+                "activated": False,
+                "repeat": False,
+                "weekdays": [],
+                "metadata_raw": None,
+                "start_date_raw": None,
+            },
         ]
         data = _build_set_climate_timers_request("TESTVIN123", timers)
         fields = _decode_message(data)

@@ -98,9 +98,7 @@ class PolestarChargeLimitNumber(CoordinatorEntity[PolestarCoordinator], NumberEn
         await self.coordinator.async_request_refresh()
 
 
-class PolestarClimateTimerTemperatureNumber(
-    CoordinatorEntity[PolestarCoordinator], NumberEntity
-):
+class PolestarClimateTimerTemperatureNumber(CoordinatorEntity[PolestarCoordinator], NumberEntity):
     """Climate timer temperature — sets the target cabin temperature for scheduled climate."""
 
     _attr_has_entity_name = True
@@ -158,7 +156,5 @@ class PolestarClimateTimerTemperatureNumber(
                 value,
             )
         except (grpc.RpcError, PccsError) as err:
-            raise HomeAssistantError(
-                f"Failed to set climate timer temperature: {err}"
-            ) from err
+            raise HomeAssistantError(f"Failed to set climate timer temperature: {err}") from err
         await self.coordinator.async_request_refresh()

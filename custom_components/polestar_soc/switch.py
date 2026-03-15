@@ -267,9 +267,7 @@ class PolestarClimateTimerSwitch(CoordinatorEntity[PolestarCoordinator], SwitchE
 
     async def _set_activated(self, activated: bool) -> None:
         """Set the timer activation state, preserving all other fields."""
-        all_timers = list(
-            self.coordinator.data.get("climate_timers", {}).get(self._vin) or []
-        )
+        all_timers = list(self.coordinator.data.get("climate_timers", {}).get(self._vin) or [])
 
         # Modify the target timer's activated field
         found = False
