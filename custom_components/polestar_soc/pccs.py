@@ -55,8 +55,11 @@ class PccsError(HomeAssistantError):
 _SVC_TARGET_SOC = "/pccs.chronos.services.v1.TargetSocService"
 _SVC_CHARGE_TIMER = "/pccs.chronos.services.v2.GlobalChargeTimerService"
 _SVC_CLIMATE_TIMER = "/pccs.chronos.services.v1.ParkingClimateTimerService"
+_SVC_AMP_LIMIT = "/pccs.chronos.services.v1.AmpLimitService"
 _SVC_INVOCATION = "/pccs.invocation.v1.InvocationService"
 
+_METHOD_GET_AMP_LIMIT = f"{_SVC_AMP_LIMIT}/GetAmpLimit"
+_METHOD_SET_AMP_LIMIT = f"{_SVC_AMP_LIMIT}/SetAmpLimit"
 _METHOD_GET_TARGET_SOC = f"{_SVC_TARGET_SOC}/GetTargetSoc"
 _METHOD_SET_TARGET_SOC = f"{_SVC_TARGET_SOC}/SetTargetSoc"
 _METHOD_GET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/GetGlobalChargeTimerStream"
@@ -69,6 +72,22 @@ _METHOD_CLIMATIZATION_START = f"{_SVC_INVOCATION}/ClimatizationStart"
 _METHOD_CLIMATIZATION_STOP = f"{_SVC_INVOCATION}/ClimatizationStop"
 _METHOD_LOCK = f"{_SVC_INVOCATION}/Lock"
 _METHOD_UNLOCK = f"{_SVC_INVOCATION}/Unlock"
+
+# Chronos Status enum (pccs.chronos.messages.common.v1.Status)
+# Used by SetAmpLimitResponse — different from _RESPONSE_STATUS_NAMES!
+_CHRONOS_STATUS_NAMES = {
+    0: "UNKNOWN_ERROR",
+    1: "SENT",
+    2: "DELIVERED",
+    3: "SUCCESS",
+    4: "SYNCED",
+    5: "CAR_OFFLINE",
+    6: "CAR_ERROR",
+    7: "ERROR",
+    8: "REPLACED",
+}
+_CHRONOS_INTERMEDIATE_STATUSES = {1, 2}  # SENT, DELIVERED
+_CHRONOS_SUCCESS_STATUSES = {3, 4}  # SUCCESS, SYNCED
 
 _INVOCATION_EXPIRY_MS = 120_000  # command expiry: 120 seconds
 
@@ -106,6 +125,73 @@ def _build_chronos_request(vin: str) -> bytes:
 def _build_get_request(vin: str) -> bytes:
     """Build a Get*Request wrapping a ChronosRequest in field 1."""
     return _encode_field_bytes(1, _build_chronos_request(vin))
+
+
+def _build_set_amp_limit_request(vin: str, amp_limit: int) -> bytes:
+    """Build SetAmpLimit request bytes.
+
+    Args:
+        vin: Vehicle identification number.
+        amp_limit: Desired charging amperage limit (e.g. 16).
+    """
+    msg = _encode_field_bytes(1, _build_chronos_request(vin))
+    msg += _encode_field_varint(2, amp_limit)
+    return msg
+
+
+def _parse_amp_limit_response(data: bytes) -> dict:
+    """Parse GetAmpLimitResponse.
+
+    Response structure:
+        field 1: id (string)
+        field 2: vin (string)
+        field 3: ampLimit (AmpLimit sub-message)
+        field 4: pendingAmpLimit (AmpLimit sub-message)
+        field 5: updatedAt (varint)
+
+    AmpLimit sub-message:
+        field 1: ampLimit (int32)
+        field 2: updatedAt (int64)
+        field 3: source (string)
+        field 4: id (string)
+    """
+    if not data:
+        return {"amp_limit": None, "pending_amp_limit": None}
+
+    fields = _decode_message(data)
+
+    amp_limit_msg = _get_submessage(fields, 3)
+    pending_msg = _get_submessage(fields, 4)
+
+    amp_limit = _get_int(amp_limit_msg, 1, 0) if amp_limit_msg else 0
+    pending = _get_int(pending_msg, 1, 0) if pending_msg else 0
+
+    return {
+        "amp_limit": amp_limit or None,
+        "pending_amp_limit": pending or None,
+    }
+
+
+def _parse_set_amp_limit_response(data: bytes) -> dict:
+    """Parse SetAmpLimitResponse.
+
+    Response structure:
+        field 1: id (string)
+        field 2: vin (string)
+        field 3: status (Chronos Status enum: SUCCESS=3)
+        field 4: message (string)
+    """
+    if not data:
+        return {"id": "", "vin": "", "status": 0, "message": ""}
+
+    fields = _decode_message(data)
+
+    return {
+        "id": _get_string(fields, 1),
+        "vin": _get_string(fields, 2),
+        "status": _get_int(fields, 3, 0),
+        "message": _get_string(fields, 4),
+    }
 
 
 def _build_set_target_soc_request(vin: str, target_soc: int, setting_type: int = 3) -> bytes:
@@ -603,6 +689,65 @@ class PccsClient:
         if self._channel is not None:
             self._channel.close()
             self._channel = None
+
+    # -- Amp Limit -----------------------------------------------------------
+
+    def get_amp_limit(self, vin: str) -> dict:
+        """Get the current charging amperage limit for a vehicle.
+
+        GetAmpLimit is a server-streaming RPC; we take the first response.
+        """
+        channel = self._get_channel()
+        method = channel.unary_stream(
+            _METHOD_GET_AMP_LIMIT,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        request = _build_get_request(vin)
+        try:
+            responses = method(request, metadata=self._metadata(vin), timeout=30)
+            for response in responses:
+                return _parse_amp_limit_response(response)
+            return _parse_amp_limit_response(b"")
+        except grpc.RpcError as err:
+            _LOGGER.warning("PCCS GetAmpLimit failed: %s", err)
+            raise
+
+    def set_amp_limit(self, vin: str, amp_limit: int) -> dict:
+        """Set the charging amperage limit for a vehicle.
+
+        SetAmpLimit is a server-streaming RPC that may emit intermediate
+        statuses (SENT, DELIVERED) before reaching a terminal status.
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+        """
+        channel = self._get_channel()
+        method = channel.unary_stream(
+            _METHOD_SET_AMP_LIMIT,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        request = _build_set_amp_limit_request(vin, amp_limit)
+        try:
+            responses = method(request, metadata=self._write_metadata(vin), timeout=30)
+            result = _parse_set_amp_limit_response(b"")
+            for response in responses:
+                result = _parse_set_amp_limit_response(response)
+                if result.get("status", 0) not in _CHRONOS_INTERMEDIATE_STATUSES:
+                    break
+        except grpc.RpcError as err:
+            _LOGGER.warning("PCCS SetAmpLimit failed: %s", err)
+            raise
+
+        status = result.get("status", 0)
+        if status not in _CHRONOS_SUCCESS_STATUSES:  # SUCCESS(3) or SYNCED(4)
+            status_name = _CHRONOS_STATUS_NAMES.get(status, f"STATUS_{status}")
+            server_msg = result.get("message", "")
+            msg = f"SetAmpLimit failed: {status_name}"
+            if server_msg:
+                msg += f" - {server_msg}"
+            raise PccsError(msg)
+
+        return result
 
     # -- Target SOC ----------------------------------------------------------
 

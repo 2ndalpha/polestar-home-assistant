@@ -7,7 +7,7 @@ import logging
 import grpc
 from homeassistant.components.number import NumberDeviceClass, NumberEntity, NumberMode
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfTemperature
+from homeassistant.const import PERCENTAGE, UnitOfElectricCurrent, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -33,6 +33,7 @@ async def async_setup_entry(
     for vehicle in coordinator.data.get("vehicles", []):
         vin = vehicle["vin"]
         entities.append(PolestarChargeLimitNumber(coordinator, vehicle, vin))
+        entities.append(PolestarAmpLimitNumber(coordinator, vehicle, vin))
         entities.append(PolestarClimateTimerTemperatureNumber(coordinator, vehicle, vin))
 
     async_add_entities(entities)
@@ -95,6 +96,66 @@ class PolestarChargeLimitNumber(CoordinatorEntity[PolestarCoordinator], NumberEn
             )
         except grpc.RpcError as err:
             raise HomeAssistantError(f"Failed to set charge limit: {err}") from err
+        await self.coordinator.async_request_refresh()
+
+
+class PolestarAmpLimitNumber(CoordinatorEntity[PolestarCoordinator], NumberEntity):
+    """Charging amp limit — sets the maximum AC charging current in amps."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "amp_limit"
+    _attr_native_min_value = 6
+    _attr_native_max_value = 32
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
+    _attr_device_class = NumberDeviceClass.CURRENT
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(
+        self,
+        coordinator: PolestarCoordinator,
+        vehicle: dict,
+        vin: str,
+    ) -> None:
+        """Initialize the amp limit number entity."""
+        super().__init__(coordinator)
+        self._vin = vin
+        self._attr_unique_id = f"{vin}_amp_limit"
+
+        model_name = "Polestar"
+        content = vehicle.get("content")
+        if content and content.get("model"):
+            model_name = content["model"].get("name", model_name)
+        year = vehicle.get("modelYear", "")
+        device_name = f"{model_name} ({year})" if year else model_name
+
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, vin)},
+            name=device_name,
+            manufacturer="Polestar",
+            model=model_name,
+            sw_version=str(year) if year else None,
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current charging amp limit."""
+        data = self.coordinator.data
+        if not data:
+            return None
+        amp_data = data.get("amp_limit", {}).get(self._vin)
+        if amp_data is None:
+            return None
+        return amp_data.get("pending_amp_limit") or amp_data.get("amp_limit")
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set the charging amp limit via PCCS."""
+        try:
+            await self.hass.async_add_executor_job(
+                self.coordinator.pccs.set_amp_limit, self._vin, int(value)
+            )
+        except (grpc.RpcError, PccsError) as err:
+            raise HomeAssistantError(f"Failed to set amp limit: {err}") from err
         await self.coordinator.async_request_refresh()
 
 

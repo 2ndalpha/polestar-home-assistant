@@ -181,6 +181,7 @@ def sample_coordinator_data(
         "battery": {vin: sample_battery},
         "odometer": {vin: sample_odometer},
         "target_soc": {},
+        "amp_limit": {},
         "charge_timer": {},
         "climate_timers": {},
         "climate_timer_settings": {},

@@ -519,6 +519,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
                     "battery": {},
                     "odometer": {},
                     "target_soc": {},
+                    "amp_limit": {},
                     "charge_timer": {},
                     "climate_timers": {},
                     "climate_timer_settings": {},
@@ -544,6 +545,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
 
             # Fetch PCCS data (charge target + timer + climate timers) per VIN
             target_soc_by_vin: dict = {}
+            amp_limit_by_vin: dict = {}
             charge_timer_by_vin: dict = {}
             climate_timers_by_vin: dict = {}
             climate_timer_settings_by_vin: dict = {}
@@ -552,6 +554,10 @@ class PolestarCoordinator(DataUpdateCoordinator):
                     target_soc_by_vin[vin] = self.pccs.get_target_soc(vin)
                 except Exception:
                     _LOGGER.debug("Failed to fetch PCCS target SOC for %s", vin)
+                try:
+                    amp_limit_by_vin[vin] = self.pccs.get_amp_limit(vin)
+                except Exception:
+                    _LOGGER.debug("Failed to fetch PCCS amp limit for %s", vin)
                 try:
                     charge_timer_by_vin[vin] = self.pccs.get_global_charge_timer(vin)
                 except Exception:
@@ -600,6 +606,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 "battery": battery_by_vin,
                 "odometer": odometer_by_vin,
                 "target_soc": target_soc_by_vin,
+                "amp_limit": amp_limit_by_vin,
                 "charge_timer": charge_timer_by_vin,
                 "climate_timers": climate_timers_by_vin,
                 "climate_timer_settings": climate_timer_settings_by_vin,

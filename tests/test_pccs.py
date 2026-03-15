@@ -7,11 +7,13 @@ import pytest
 from custom_components.polestar_soc.pccs import (
     _METHOD_CLIMATIZATION_START,
     _METHOD_CLIMATIZATION_STOP,
+    _METHOD_GET_AMP_LIMIT,
     _METHOD_GET_CHARGE_TIMER,
     _METHOD_GET_CLIMATE_TIMER_SETTINGS,
     _METHOD_GET_CLIMATE_TIMERS,
     _METHOD_GET_TARGET_SOC,
     _METHOD_LOCK,
+    _METHOD_SET_AMP_LIMIT,
     _METHOD_SET_CHARGE_TIMER,
     _METHOD_SET_CLIMATE_TIMER_SETTINGS,
     _METHOD_SET_CLIMATE_TIMERS,
@@ -23,6 +25,7 @@ from custom_components.polestar_soc.pccs import (
     _build_invocation_request,
     _build_lock_request,
     _build_parking_climate_timer,
+    _build_set_amp_limit_request,
     _build_set_charge_timer_request,
     _build_set_climate_timer_settings_request,
     _build_set_climate_timers_request,
@@ -30,9 +33,11 @@ from custom_components.polestar_soc.pccs import (
     _build_time_of_day,
     _build_unlock_request,
     _lock_error_context,
+    _parse_amp_limit_response,
     _parse_charge_timer_response,
     _parse_climate_timer_settings_response,
     _parse_climate_timers_response,
+    _parse_set_amp_limit_response,
     _parse_set_charge_timer_response,
     _parse_set_climate_timers_response,
     _parse_target_soc_response,
@@ -73,6 +78,12 @@ class TestServicePaths:
     def test_charge_timer_set_path(self):
         expected = "/pccs.chronos.services.v2.GlobalChargeTimerService/SetGlobalChargeTimer"
         assert expected == _METHOD_SET_CHARGE_TIMER
+
+    def test_amp_limit_get_path(self):
+        assert _METHOD_GET_AMP_LIMIT == "/pccs.chronos.services.v1.AmpLimitService/GetAmpLimit"
+
+    def test_amp_limit_set_path(self):
+        assert _METHOD_SET_AMP_LIMIT == "/pccs.chronos.services.v1.AmpLimitService/SetAmpLimit"
 
     def test_climatization_start_path(self):
         expected = "/pccs.invocation.v1.InvocationService/ClimatizationStart"
@@ -1170,3 +1181,114 @@ class TestBuildSetClimateTimerSettingsRequest:
         fields = _decode_message(data)
         settings = _get_submessage(fields, 2)
         assert _get_float(settings, 3) == pytest.approx(18.5)
+
+
+# ---------------------------------------------------------------------------
+# Amp limit parsers
+# ---------------------------------------------------------------------------
+
+
+class TestParseAmpLimitResponse:
+    def test_empty_data(self):
+        result = _parse_amp_limit_response(b"")
+        assert result["amp_limit"] is None
+        assert result["pending_amp_limit"] is None
+
+    def test_basic_response(self):
+        # AmpLimit sub-message in field 3: field 1 = ampLimit (16)
+        inner = _encode_field_varint(1, 16)
+        data = _encode_field_bytes(3, inner)
+        result = _parse_amp_limit_response(data)
+        assert result["amp_limit"] == 16
+        assert result["pending_amp_limit"] is None
+
+    def test_with_pending(self):
+        inner = _encode_field_varint(1, 16)
+        pending = _encode_field_varint(1, 10)
+        data = _encode_field_bytes(3, inner) + _encode_field_bytes(4, pending)
+        result = _parse_amp_limit_response(data)
+        assert result["amp_limit"] == 16
+        assert result["pending_amp_limit"] == 10
+
+    def test_zero_converts_to_none(self):
+        """Proto3 default 0 should be treated as 'not set'."""
+        inner = _encode_field_varint(1, 0)
+        data = _encode_field_bytes(3, inner)
+        result = _parse_amp_limit_response(data)
+        assert result["amp_limit"] is None
+
+    def test_full_response_with_id_and_vin(self):
+        """Response with all envelope fields present."""
+        inner = _encode_field_varint(1, 32)
+        data = (
+            _encode_field_bytes(1, b"req-uuid")
+            + _encode_field_bytes(2, b"TESTVIN123")
+            + _encode_field_bytes(3, inner)
+            + _encode_field_varint(5, 1773247754487)
+        )
+        result = _parse_amp_limit_response(data)
+        assert result["amp_limit"] == 32
+        assert result["pending_amp_limit"] is None
+
+
+class TestParseSetAmpLimitResponse:
+    def test_empty_data(self):
+        result = _parse_set_amp_limit_response(b"")
+        assert result["id"] == ""
+        assert result["vin"] == ""
+        assert result["status"] == 0
+        assert result["message"] == ""
+
+    def test_success(self):
+        data = (
+            _encode_field_bytes(1, b"req-uuid")
+            + _encode_field_bytes(2, b"TESTVIN123")
+            + _encode_field_varint(3, 3)  # SUCCESS in Chronos Status enum
+        )
+        result = _parse_set_amp_limit_response(data)
+        assert result["id"] == "req-uuid"
+        assert result["vin"] == "TESTVIN123"
+        assert result["status"] == 3
+        assert result["message"] == ""
+
+    def test_error_with_message(self):
+        data = (
+            _encode_field_bytes(1, b"req-uuid")
+            + _encode_field_bytes(2, b"TESTVIN123")
+            + _encode_field_varint(3, 7)  # ERROR
+            + _encode_field_bytes(4, b"Vehicle rejected command")
+        )
+        result = _parse_set_amp_limit_response(data)
+        assert result["status"] == 7
+        assert result["message"] == "Vehicle rejected command"
+
+    def test_intermediate_status_sent(self):
+        data = (
+            _encode_field_bytes(1, b"req-uuid")
+            + _encode_field_bytes(2, b"TESTVIN123")
+            + _encode_field_varint(3, 1)  # SENT
+        )
+        result = _parse_set_amp_limit_response(data)
+        assert result["status"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Amp limit request builder
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSetAmpLimitRequest:
+    def test_structure(self):
+        data = _build_set_amp_limit_request("TESTVIN123", 16)
+        fields = _decode_message(data)
+        # Field 1: ChronosRequest
+        chronos = _decode_message(fields[1][0])
+        assert chronos[2] == [b"TESTVIN123"]
+        # Field 2: ampLimit (varint)
+        assert fields[2] == [16]
+
+    def test_different_values(self):
+        for amp_val in (6, 10, 16, 20, 32):
+            data = _build_set_amp_limit_request("VIN", amp_val)
+            fields = _decode_message(data)
+            assert fields[2] == [amp_val]

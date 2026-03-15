@@ -82,6 +82,9 @@
       "charge_limit": {
         "name": "Charge limit"
       },
+      "amp_limit": {
+        "name": "Charging amp limit"
+      },
       "climate_timer_temperature": {
         "name": "Climate timer temperature"
       }
