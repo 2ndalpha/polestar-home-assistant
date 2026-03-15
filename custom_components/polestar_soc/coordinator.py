@@ -520,6 +520,8 @@ class PolestarCoordinator(DataUpdateCoordinator):
                     "odometer": {},
                     "target_soc": {},
                     "charge_timer": {},
+                    "climate_timers": {},
+                    "climate_timer_settings": {},
                     "climate": {},
                     "cep_battery": {},
                     "location": {},
@@ -540,9 +542,11 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 if o:
                     odometer_by_vin[o["vin"]] = o
 
-            # Fetch PCCS data (charge target + timer) per VIN
+            # Fetch PCCS data (charge target + timer + climate timers) per VIN
             target_soc_by_vin: dict = {}
             charge_timer_by_vin: dict = {}
+            climate_timers_by_vin: dict = {}
+            climate_timer_settings_by_vin: dict = {}
             for vin in vins:
                 try:
                     target_soc_by_vin[vin] = self.pccs.get_target_soc(vin)
@@ -552,6 +556,16 @@ class PolestarCoordinator(DataUpdateCoordinator):
                     charge_timer_by_vin[vin] = self.pccs.get_global_charge_timer(vin)
                 except Exception:
                     _LOGGER.debug("Failed to fetch PCCS charge timer for %s", vin)
+                try:
+                    climate_timers_by_vin[vin] = self.pccs.get_parking_climate_timers(vin)
+                except Exception:
+                    _LOGGER.debug("Failed to fetch PCCS climate timers for %s", vin)
+                try:
+                    climate_timer_settings_by_vin[vin] = (
+                        self.pccs.get_parking_climate_timer_settings(vin)
+                    )
+                except Exception:
+                    _LOGGER.debug("Failed to fetch PCCS climate timer settings for %s", vin)
 
             # Fetch CEP data (climate status + battery + location) per VIN
             climate_by_vin: dict = {}
@@ -587,6 +601,8 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 "odometer": odometer_by_vin,
                 "target_soc": target_soc_by_vin,
                 "charge_timer": charge_timer_by_vin,
+                "climate_timers": climate_timers_by_vin,
+                "climate_timer_settings": climate_timer_settings_by_vin,
                 "climate": climate_by_vin,
                 "cep_battery": cep_battery_by_vin,
                 "location": location_by_vin,

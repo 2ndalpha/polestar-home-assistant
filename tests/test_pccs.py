@@ -8,9 +8,13 @@ from custom_components.polestar_soc.pccs import (
     _METHOD_CLIMATIZATION_START,
     _METHOD_CLIMATIZATION_STOP,
     _METHOD_GET_CHARGE_TIMER,
+    _METHOD_GET_CLIMATE_TIMER_SETTINGS,
+    _METHOD_GET_CLIMATE_TIMERS,
     _METHOD_GET_TARGET_SOC,
     _METHOD_LOCK,
     _METHOD_SET_CHARGE_TIMER,
+    _METHOD_SET_CLIMATE_TIMER_SETTINGS,
+    _METHOD_SET_CLIMATE_TIMERS,
     _METHOD_SET_TARGET_SOC,
     _METHOD_UNLOCK,
     PccsClient,
@@ -18,24 +22,34 @@ from custom_components.polestar_soc.pccs import (
     _build_climatization_stop_request,
     _build_invocation_request,
     _build_lock_request,
+    _build_parking_climate_timer,
     _build_set_charge_timer_request,
+    _build_set_climate_timer_settings_request,
+    _build_set_climate_timers_request,
     _build_set_target_soc_request,
     _build_time_of_day,
     _build_unlock_request,
     _lock_error_context,
     _parse_charge_timer_response,
+    _parse_climate_timer_settings_response,
+    _parse_climate_timers_response,
     _parse_set_charge_timer_response,
+    _parse_set_climate_timers_response,
     _parse_target_soc_response,
 )
 from custom_components.polestar_soc.proto import (
     _decode_message,
+    _decode_packed_varints,
     _decode_varint,
     _encode_field_bytes,
     _encode_field_fixed32,
     _encode_field_varint,
+    _encode_packed_varints,
     _encode_varint,
     _get_bool,
+    _get_float,
     _get_int,
+    _get_string,
     _get_submessage,
     _parse_invocation_response,
 )
@@ -744,3 +758,415 @@ class TestLockErrorContext:
         inner = _encode_field_varint(3, 11)
         data = _encode_field_bytes(1, inner) + _encode_field_varint(2, 99)
         assert _lock_error_context(data) == "lock error (code 99)"
+
+
+# ---------------------------------------------------------------------------
+# Proto helpers: _get_string, _get_float, packed varints
+# ---------------------------------------------------------------------------
+
+
+class TestGetString:
+    def test_existing_field(self):
+        fields = {1: [b"hello"]}
+        assert _get_string(fields, 1) == "hello"
+
+    def test_missing_field_default(self):
+        assert _get_string({}, 1) == ""
+        assert _get_string({}, 1, "default") == "default"
+
+    def test_non_bytes_returns_default(self):
+        fields = {1: [42]}
+        assert _get_string(fields, 1) == ""
+
+    def test_utf8_decoding(self):
+        fields = {1: ["Ström".encode()]}
+        assert _get_string(fields, 1) == "Ström"
+
+
+class TestGetFloat:
+    def test_existing_field(self):
+        # Encode 22.0 as fixed32, then decode and extract
+        data = _encode_field_fixed32(3, 22.0)
+        fields = _decode_message(data)
+        assert _get_float(fields, 3) == pytest.approx(22.0)
+
+    def test_missing_field(self):
+        assert _get_float({}, 3) is None
+
+    def test_non_int_returns_none(self):
+        fields = {3: [b"not-a-float"]}
+        assert _get_float(fields, 3) is None
+
+    def test_negative_temperature(self):
+        data = _encode_field_fixed32(3, -5.0)
+        fields = _decode_message(data)
+        assert _get_float(fields, 3) == pytest.approx(-5.0)
+
+    def test_fractional(self):
+        data = _encode_field_fixed32(3, 18.5)
+        fields = _decode_message(data)
+        assert _get_float(fields, 3) == pytest.approx(18.5)
+
+
+class TestPackedVarints:
+    def test_decode_empty(self):
+        assert _decode_packed_varints(b"") == []
+
+    def test_decode_single_value(self):
+        encoded = _encode_varint(5)
+        assert _decode_packed_varints(encoded) == [5]
+
+    def test_decode_multiple_values(self):
+        encoded = _encode_varint(1) + _encode_varint(3) + _encode_varint(5)
+        assert _decode_packed_varints(encoded) == [1, 3, 5]
+
+    def test_encode_empty(self):
+        assert _encode_packed_varints(6, []) == b""
+
+    def test_roundtrip(self):
+        values = [1, 2, 3, 4, 5]
+        encoded = _encode_packed_varints(6, values)
+        fields = _decode_message(encoded)
+        raw = fields[6][0]
+        assert isinstance(raw, bytes)
+        assert _decode_packed_varints(raw) == values
+
+    def test_roundtrip_large_values(self):
+        values = [128, 300, 16384]
+        encoded = _encode_packed_varints(6, values)
+        fields = _decode_message(encoded)
+        raw = fields[6][0]
+        assert _decode_packed_varints(raw) == values
+
+
+# ---------------------------------------------------------------------------
+# Climate timer service paths
+# ---------------------------------------------------------------------------
+
+
+class TestClimateTimerServicePaths:
+    def test_get_timers_path(self):
+        svc = "/pccs.chronos.services.v1.ParkingClimateTimerService"
+        assert f"{svc}/GetTimers" == _METHOD_GET_CLIMATE_TIMERS
+
+    def test_set_timers_path(self):
+        svc = "/pccs.chronos.services.v1.ParkingClimateTimerService"
+        assert f"{svc}/SetTimers" == _METHOD_SET_CLIMATE_TIMERS
+
+    def test_get_settings_path(self):
+        svc = "/pccs.chronos.services.v1.ParkingClimateTimerService"
+        assert f"{svc}/GetTimerSettings" == _METHOD_GET_CLIMATE_TIMER_SETTINGS
+
+    def test_set_settings_path(self):
+        svc = "/pccs.chronos.services.v1.ParkingClimateTimerService"
+        assert f"{svc}/SetTimerSettings" == _METHOD_SET_CLIMATE_TIMER_SETTINGS
+
+
+# ---------------------------------------------------------------------------
+# Climate timer response parsers
+# ---------------------------------------------------------------------------
+
+
+class TestParseClimateTimersResponse:
+    def test_empty_data(self):
+        assert _parse_climate_timers_response(b"") == []
+
+    def test_single_timer(self):
+        # Build a single ParkingClimateTimer
+        ready_at = _build_time_of_day(7, 30)
+        timer = (
+            _encode_field_bytes(1, b"timer-uuid-1")
+            + _encode_field_varint(2, 1)  # index
+            + _encode_field_bytes(3, ready_at)
+            + _encode_field_varint(4, 1)  # activated=True
+        )
+        # Wrap in response: field 3 = repeated timers (baseline)
+        data = _encode_field_bytes(3, timer)
+        result = _parse_climate_timers_response(data)
+        assert len(result) == 1
+        assert result[0]["timer_id"] == "timer-uuid-1"
+        assert result[0]["index"] == 1
+        assert result[0]["hour"] == 7
+        assert result[0]["minute"] == 30
+        assert result[0]["activated"] is True
+
+    def test_multiple_timers(self):
+        timer1 = (
+            _encode_field_bytes(1, b"uuid-1")
+            + _encode_field_varint(2, 1)
+            + _encode_field_bytes(3, _build_time_of_day(7, 0))
+            + _encode_field_varint(4, 1)
+        )
+        timer2 = (
+            _encode_field_bytes(1, b"uuid-2")
+            + _encode_field_varint(2, 2)
+            + _encode_field_bytes(3, _build_time_of_day(8, 15))
+        )
+        data = _encode_field_bytes(3, timer1) + _encode_field_bytes(3, timer2)
+        result = _parse_climate_timers_response(data)
+        assert len(result) == 2
+        assert result[0]["index"] == 1
+        assert result[1]["index"] == 2
+        assert result[1]["hour"] == 8
+        assert result[1]["minute"] == 15
+        assert result[1]["activated"] is False
+
+    def test_pending_preferred_over_baseline(self):
+        baseline_timer = (
+            _encode_field_bytes(1, b"uuid-1")
+            + _encode_field_varint(2, 1)
+            + _encode_field_bytes(3, _build_time_of_day(7, 0))
+        )
+        pending_timer = (
+            _encode_field_bytes(1, b"uuid-1")
+            + _encode_field_varint(2, 1)
+            + _encode_field_bytes(3, _build_time_of_day(9, 45))
+            + _encode_field_varint(4, 1)
+        )
+        data = _encode_field_bytes(3, baseline_timer) + _encode_field_bytes(4, pending_timer)
+        result = _parse_climate_timers_response(data)
+        assert len(result) == 1
+        assert result[0]["hour"] == 9
+        assert result[0]["minute"] == 45
+        assert result[0]["activated"] is True
+
+    def test_weekdays_parsed(self):
+        weekdays = _encode_varint(1) + _encode_varint(3) + _encode_varint(5)
+        timer = (
+            _encode_field_bytes(1, b"uuid-1")
+            + _encode_field_varint(2, 1)
+            + _encode_field_bytes(3, _build_time_of_day(7, 0))
+            + _encode_field_varint(5, 1)  # repeat=True
+            + _encode_field_bytes(6, weekdays)  # packed weekdays
+        )
+        data = _encode_field_bytes(3, timer)
+        result = _parse_climate_timers_response(data)
+        assert result[0]["repeat"] is True
+        assert result[0]["weekdays"] == [1, 3, 5]
+
+    def test_metadata_and_start_date_preserved(self):
+        metadata = _encode_field_varint(1, 12345)
+        start_date = (
+            _encode_field_varint(1, 2026) + _encode_field_varint(2, 3) + _encode_field_varint(3, 15)
+        )
+        timer = (
+            _encode_field_bytes(1, b"uuid-1")
+            + _encode_field_varint(2, 1)
+            + _encode_field_bytes(3, _build_time_of_day(7, 0))
+            + _encode_field_bytes(7, metadata)
+            + _encode_field_bytes(8, start_date)
+        )
+        data = _encode_field_bytes(3, timer)
+        result = _parse_climate_timers_response(data)
+        assert result[0]["metadata_raw"] == metadata
+        assert result[0]["start_date_raw"] == start_date
+
+
+class TestParseClimateTimerSettingsResponse:
+    def test_empty_data(self):
+        result = _parse_climate_timer_settings_response(b"")
+        assert result["temperature"] is None
+
+    def test_with_temperature(self):
+        # TimerSettings: field 3 = temperature (fixed32)
+        settings = _encode_field_fixed32(3, 22.0) + _encode_field_varint(4, 1)
+        # Response: field 1 = baseline settings
+        data = _encode_field_bytes(1, settings)
+        result = _parse_climate_timer_settings_response(data)
+        assert result["temperature"] == pytest.approx(22.0)
+
+    def test_pending_preferred(self):
+        baseline = _encode_field_fixed32(3, 20.0)
+        pending = _encode_field_fixed32(3, 25.0)
+        data = _encode_field_bytes(1, baseline) + _encode_field_bytes(2, pending)
+        result = _parse_climate_timer_settings_response(data)
+        assert result["temperature"] == pytest.approx(25.0)
+
+    def test_no_settings_in_envelope(self):
+        # Only updatedAt field
+        data = _encode_field_varint(3, 1773247754487)
+        result = _parse_climate_timer_settings_response(data)
+        assert result["temperature"] is None
+
+
+class TestParseSetClimateTimersResponse:
+    def test_empty_data(self):
+        result = _parse_set_climate_timers_response(b"")
+        assert result["id"] == ""
+        assert result["vin"] == ""
+        assert result["status"] == 0
+        assert result["message"] == ""
+
+    def test_success(self):
+        data = (
+            _encode_field_bytes(1, b"req-uuid")
+            + _encode_field_bytes(2, b"TESTVIN123")
+            + _encode_field_varint(3, 1)  # SUCCESS
+        )
+        result = _parse_set_climate_timers_response(data)
+        assert result["id"] == "req-uuid"
+        assert result["vin"] == "TESTVIN123"
+        assert result["status"] == 1
+        assert result["message"] == ""
+
+    def test_validation_error(self):
+        data = (
+            _encode_field_bytes(1, b"req-uuid")
+            + _encode_field_bytes(2, b"TESTVIN123")
+            + _encode_field_varint(3, 2)  # VALIDATION_ERROR
+            + _encode_field_bytes(4, b"Invalid timer data")
+        )
+        result = _parse_set_climate_timers_response(data)
+        assert result["status"] == 2
+        assert result["message"] == "Invalid timer data"
+
+
+# ---------------------------------------------------------------------------
+# Climate timer request builders
+# ---------------------------------------------------------------------------
+
+
+class TestBuildParkingClimateTimer:
+    def test_basic_timer(self):
+        timer = {
+            "timer_id": "test-uuid",
+            "index": 1,
+            "hour": 7,
+            "minute": 30,
+            "activated": True,
+            "repeat": True,
+            "weekdays": [1, 3, 5],
+            "metadata_raw": None,
+            "start_date_raw": None,
+        }
+        data = _build_parking_climate_timer(timer)
+        fields = _decode_message(data)
+        assert fields[1] == [b"test-uuid"]
+        assert fields[2] == [1]
+        # Field 3 = DailyTime sub-message
+        ready_at = _get_submessage(fields, 3)
+        assert _get_int(ready_at, 1) == 7
+        assert _get_int(ready_at, 2) == 30
+        # Field 4 = activated
+        assert _get_bool(fields, 4) is True
+        # Field 5 = repeat
+        assert _get_bool(fields, 5) is True
+        # Field 6 = weekdays (packed)
+        raw_weekdays = fields[6][0]
+        assert _decode_packed_varints(raw_weekdays) == [1, 3, 5]
+
+    def test_inactive_timer(self):
+        timer = {
+            "timer_id": "test-uuid",
+            "index": 2,
+            "hour": 8,
+            "minute": 0,
+            "activated": False,
+            "repeat": False,
+            "weekdays": [],
+            "metadata_raw": None,
+            "start_date_raw": None,
+        }
+        data = _build_parking_climate_timer(timer)
+        fields = _decode_message(data)
+        # activated and repeat should be omitted (proto3 default false)
+        assert 4 not in fields
+        assert 5 not in fields
+        # No weekdays
+        assert 6 not in fields
+
+    def test_metadata_passthrough(self):
+        metadata = _encode_field_varint(1, 99)
+        timer = {
+            "timer_id": "test-uuid",
+            "index": 1,
+            "hour": 7,
+            "minute": 0,
+            "activated": True,
+            "repeat": False,
+            "weekdays": [],
+            "metadata_raw": metadata,
+            "start_date_raw": None,
+        }
+        data = _build_parking_climate_timer(timer)
+        fields = _decode_message(data)
+        assert fields[7] == [metadata]
+
+
+class TestBuildSetClimateTimersRequest:
+    def test_structure(self):
+        timers = [
+            {
+                "timer_id": "uuid-1",
+                "index": 1,
+                "hour": 7,
+                "minute": 30,
+                "activated": True,
+                "repeat": False,
+                "weekdays": [],
+                "metadata_raw": None,
+                "start_date_raw": None,
+            },
+        ]
+        data = _build_set_climate_timers_request("TESTVIN123", timers)
+        fields = _decode_message(data)
+        # Field 1: ChronosRequest
+        chronos = _decode_message(fields[1][0])
+        assert chronos[2] == [b"TESTVIN123"]
+        # Field 2: repeated ParkingClimateTimer (at least one)
+        assert 2 in fields
+        timer_fields = _decode_message(fields[2][0])
+        assert timer_fields[1] == [b"uuid-1"]
+
+    def test_multiple_timers(self):
+        timers = [
+            {
+                "timer_id": "uuid-1",
+                "index": 1,
+                "hour": 7,
+                "minute": 0,
+                "activated": True,
+                "repeat": False,
+                "weekdays": [],
+                "metadata_raw": None,
+                "start_date_raw": None,
+            },
+            {
+                "timer_id": "uuid-2",
+                "index": 2,
+                "hour": 8,
+                "minute": 0,
+                "activated": False,
+                "repeat": False,
+                "weekdays": [],
+                "metadata_raw": None,
+                "start_date_raw": None,
+            },
+        ]
+        data = _build_set_climate_timers_request("TESTVIN123", timers)
+        fields = _decode_message(data)
+        # Both timers in field 2
+        assert len(fields[2]) == 2
+
+
+class TestBuildSetClimateTimerSettingsRequest:
+    def test_roundtrip(self):
+        data = _build_set_climate_timer_settings_request("TESTVIN123", 22.0)
+        fields = _decode_message(data)
+        # Field 1: ChronosRequest
+        chronos = _decode_message(fields[1][0])
+        assert chronos[2] == [b"TESTVIN123"]
+        # Field 2: TimerSettings sub-message
+        settings = _get_submessage(fields, 2)
+        assert settings is not None
+        # Field 3 = temperature (fixed32)
+        temp = _get_float(settings, 3)
+        assert temp == pytest.approx(22.0)
+        # Field 4 = is_compartment_temperature_requested (bool)
+        assert _get_bool(settings, 4) is True
+
+    def test_fractional_temperature(self):
+        data = _build_set_climate_timer_settings_request("TESTVIN123", 18.5)
+        fields = _decode_message(data)
+        settings = _get_submessage(fields, 2)
+        assert _get_float(settings, 3) == pytest.approx(18.5)

@@ -143,3 +143,14 @@ USAGE_MODE_MAP: dict[int, str] = {
     6: "Engine on",
     7: "Engine off",
 }
+
+# Weekday enum (ParkingClimateTimer)
+WEEKDAY_MAP: dict[int, str] = {
+    1: "Monday",
+    2: "Tuesday",
+    3: "Wednesday",
+    4: "Thursday",
+    5: "Friday",
+    6: "Saturday",
+    7: "Sunday",
+}

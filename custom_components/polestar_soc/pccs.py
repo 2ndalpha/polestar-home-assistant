@@ -21,11 +21,15 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import _INVOCATION_INTERMEDIATE_STATUSES, INVOCATION_STATUS_MAP, PCCS_API_HOST
 from .proto import (
     _decode_message,
+    _decode_packed_varints,
     _encode_field_bytes,
     _encode_field_fixed32,
     _encode_field_varint,
+    _encode_packed_varints,
     _get_bool,
+    _get_float,
     _get_int,
+    _get_string,
     _get_submessage,
     _identity_deserialize,
     _identity_serialize,
@@ -50,12 +54,17 @@ class PccsError(HomeAssistantError):
 # gRPC service method paths
 _SVC_TARGET_SOC = "/pccs.chronos.services.v1.TargetSocService"
 _SVC_CHARGE_TIMER = "/pccs.chronos.services.v2.GlobalChargeTimerService"
+_SVC_CLIMATE_TIMER = "/pccs.chronos.services.v1.ParkingClimateTimerService"
 _SVC_INVOCATION = "/pccs.invocation.v1.InvocationService"
 
 _METHOD_GET_TARGET_SOC = f"{_SVC_TARGET_SOC}/GetTargetSoc"
 _METHOD_SET_TARGET_SOC = f"{_SVC_TARGET_SOC}/SetTargetSoc"
 _METHOD_GET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/GetGlobalChargeTimerStream"
 _METHOD_SET_CHARGE_TIMER = f"{_SVC_CHARGE_TIMER}/SetGlobalChargeTimer"
+_METHOD_GET_CLIMATE_TIMERS = f"{_SVC_CLIMATE_TIMER}/GetTimers"
+_METHOD_SET_CLIMATE_TIMERS = f"{_SVC_CLIMATE_TIMER}/SetTimers"
+_METHOD_GET_CLIMATE_TIMER_SETTINGS = f"{_SVC_CLIMATE_TIMER}/GetTimerSettings"
+_METHOD_SET_CLIMATE_TIMER_SETTINGS = f"{_SVC_CLIMATE_TIMER}/SetTimerSettings"
 _METHOD_CLIMATIZATION_START = f"{_SVC_INVOCATION}/ClimatizationStart"
 _METHOD_CLIMATIZATION_STOP = f"{_SVC_INVOCATION}/ClimatizationStop"
 _METHOD_LOCK = f"{_SVC_INVOCATION}/Lock"
@@ -343,6 +352,190 @@ def _parse_set_charge_timer_response(data: bytes) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Parking climate timer builders / parsers
+# ---------------------------------------------------------------------------
+
+
+def _parse_single_climate_timer(data: bytes) -> dict:
+    """Parse a single ParkingClimateTimer sub-message into a dict.
+
+    ParkingClimateTimer:
+        field 1: timer_id (string)
+        field 2: index (int32, 1-5)
+        field 3: ready_at (DailyTime message)
+        field 4: activated (bool)
+        field 5: repeat (bool)
+        field 6: weekdays (packed repeated Weekday enum)
+        field 7: metadata (message, opaque)
+        field 8: start_date (message, opaque)
+    """
+    fields = _decode_message(data)
+    ready_at = _get_submessage(fields, 3)
+
+    # Weekdays: packed repeated varint in field 6
+    weekdays_raw = fields.get(6, [None])[0]
+    weekdays: list[int] = []
+    if isinstance(weekdays_raw, (bytes, bytearray)):
+        weekdays = _decode_packed_varints(weekdays_raw)
+
+    return {
+        "timer_id": _get_string(fields, 1),
+        "index": _get_int(fields, 2),
+        "hour": _get_int(ready_at, 1) if ready_at else 0,
+        "minute": _get_int(ready_at, 2) if ready_at else 0,
+        "activated": _get_bool(fields, 4),
+        "repeat": _get_bool(fields, 5),
+        "weekdays": weekdays,
+        "metadata_raw": fields.get(7, [None])[0],
+        "start_date_raw": fields.get(8, [None])[0],
+    }
+
+
+def _parse_climate_timers_response(data: bytes) -> list[dict]:
+    """Parse GetParkingClimateTimersResponse.
+
+    Response structure:
+        field 1: id (string)
+        field 2: vin (string)
+        field 3: repeated ParkingClimateTimer (baseline)
+        field 4: repeated ParkingClimateTimer (pending)
+        field 5: repeated ParkingClimateTimer (pending delete)
+        field 6: updatedAt (varint)
+
+    Prefers pending (field 4) over baseline (field 3).
+    """
+    if not data:
+        return []
+
+    fields = _decode_message(data)
+
+    # Prefer pending timers (field 4) over baseline (field 3)
+    timer_list = fields.get(4) or fields.get(3) or []
+    timers: list[dict] = []
+    for raw in timer_list:
+        if isinstance(raw, (bytes, bytearray)):
+            timers.append(_parse_single_climate_timer(raw))
+
+    return timers
+
+
+def _parse_climate_timer_settings_response(data: bytes) -> dict:
+    """Parse GetParkingClimateTimerSettingsResponse.
+
+    Response structure:
+        field 1: TimerSettings (baseline)
+        field 2: TimerSettings (pending)
+        field 3: updatedAt (varint)
+
+    TimerSettings:
+        field 3: requested_compartment_temperature_celsius (float/fixed32)
+        field 4: is_compartment_temperature_requested (bool)
+
+    Prefers pending (field 2) over baseline (field 1).
+    """
+    empty: dict = {"temperature": None}
+    if not data:
+        return empty
+
+    fields = _decode_message(data)
+    settings = _get_submessage(fields, 2) or _get_submessage(fields, 1)
+    if not settings:
+        return empty
+
+    return {
+        "temperature": _get_float(settings, 3),
+    }
+
+
+def _parse_set_climate_timers_response(data: bytes) -> dict:
+    """Parse SetParkingClimateTimersResponse.
+
+    Response structure (different from SetGlobalChargeTimerResponse!):
+        field 1: id (string)
+        field 2: vin (string)
+        field 3: status (varint enum: 0=UNKNOWN_ERROR, 1=SUCCESS,
+                 2=VALIDATION_ERROR, 3=INTERNAL_ERROR)
+        field 4: message (string)
+    """
+    if not data:
+        return {"id": "", "vin": "", "status": 0, "message": ""}
+
+    fields = _decode_message(data)
+
+    return {
+        "id": _get_string(fields, 1),
+        "vin": _get_string(fields, 2),
+        "status": _get_int(fields, 3, 0),
+        "message": _get_string(fields, 4),
+    }
+
+
+def _build_parking_climate_timer(timer: dict) -> bytes:
+    """Encode a single ParkingClimateTimer dict to protobuf bytes.
+
+    All fields are preserved for round-tripping through SetTimers.
+    """
+    msg = b""
+    # field 1: timer_id (string)
+    timer_id = timer.get("timer_id", "")
+    if timer_id:
+        msg += _encode_field_bytes(1, timer_id.encode("utf-8"))
+    # field 2: index (varint)
+    index = timer.get("index", 0)
+    if index:
+        msg += _encode_field_varint(2, index)
+    # field 3: ready_at (DailyTime sub-message)
+    msg += _encode_field_bytes(3, _build_time_of_day(timer.get("hour", 0), timer.get("minute", 0)))
+    # field 4: activated (bool/varint)
+    if timer.get("activated"):
+        msg += _encode_field_varint(4, 1)
+    # field 5: repeat (bool/varint)
+    if timer.get("repeat"):
+        msg += _encode_field_varint(5, 1)
+    # field 6: weekdays (packed repeated varint)
+    weekdays = timer.get("weekdays", [])
+    if weekdays:
+        msg += _encode_packed_varints(6, weekdays)
+    # field 7: metadata (raw bytes passthrough)
+    metadata_raw = timer.get("metadata_raw")
+    if isinstance(metadata_raw, (bytes, bytearray)):
+        msg += _encode_field_bytes(7, metadata_raw)
+    # field 8: start_date (raw bytes passthrough)
+    start_date_raw = timer.get("start_date_raw")
+    if isinstance(start_date_raw, (bytes, bytearray)):
+        msg += _encode_field_bytes(8, start_date_raw)
+    return msg
+
+
+def _build_set_climate_timers_request(vin: str, timers: list[dict]) -> bytes:
+    """Build SetParkingClimateTimersRequest bytes.
+
+    Args:
+        vin: Vehicle identification number.
+        timers: Complete list of timer dicts (replace-all semantics).
+    """
+    msg = _encode_field_bytes(1, _build_chronos_request(vin))
+    for timer in timers:
+        msg += _encode_field_bytes(2, _build_parking_climate_timer(timer))
+    # field 3: time_is_utc0 — omitted (false is proto3 default)
+    return msg
+
+
+def _build_set_climate_timer_settings_request(vin: str, temperature: float) -> bytes:
+    """Build SetParkingClimateTimerSettingsRequest bytes.
+
+    Args:
+        vin: Vehicle identification number.
+        temperature: Target compartment temperature in Celsius.
+    """
+    # TimerSettings sub-message: field 3 = temperature (fixed32), field 4 = is_requested (bool)
+    settings = _encode_field_fixed32(3, temperature) + _encode_field_varint(4, 1)
+    msg = _encode_field_bytes(1, _build_chronos_request(vin))
+    msg += _encode_field_bytes(2, settings)
+    return msg
+
+
+# ---------------------------------------------------------------------------
 # PccsClient
 # ---------------------------------------------------------------------------
 
@@ -528,6 +721,117 @@ class PccsClient:
 
         if result.get("has_not_changed"):
             _LOGGER.debug("SetGlobalChargeTimer: values unchanged")
+
+        return result
+
+    # -- Parking Climate Timers ----------------------------------------------
+
+    def get_parking_climate_timers(self, vin: str) -> list[dict]:
+        """Get parking climate timers for a vehicle.
+
+        GetTimers is a server-streaming RPC; we take the first response.
+        """
+        channel = self._get_channel()
+        method = channel.unary_stream(
+            _METHOD_GET_CLIMATE_TIMERS,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        request = _build_get_request(vin)
+        try:
+            responses = method(request, metadata=self._metadata(vin), timeout=30)
+            for response in responses:
+                return _parse_climate_timers_response(response)
+            return []
+        except grpc.RpcError as err:
+            _LOGGER.warning("PCCS GetTimers (climate) failed: %s", err)
+            raise
+
+    def set_parking_climate_timers(self, vin: str, timers: list[dict]) -> dict:
+        """Set parking climate timers for a vehicle (replace-all).
+
+        SetTimers is a server-streaming RPC.
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+        """
+        channel = self._get_channel()
+        method = channel.unary_stream(
+            _METHOD_SET_CLIMATE_TIMERS,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        request = _build_set_climate_timers_request(vin, timers)
+        try:
+            responses = method(request, metadata=self._write_metadata(vin), timeout=30)
+            for response in responses:
+                result = _parse_set_climate_timers_response(response)
+                break
+            else:
+                result = _parse_set_climate_timers_response(b"")
+        except grpc.RpcError as err:
+            _LOGGER.warning("PCCS SetTimers (climate) failed: %s", err)
+            raise
+
+        status = result.get("status", 0)
+        if status != 1:  # Not SUCCESS
+            status_name = _RESPONSE_STATUS_NAMES.get(status, f"STATUS_{status}")
+            server_msg = result.get("message", "")
+            msg = f"SetTimers (climate) failed: {status_name}"
+            if server_msg:
+                msg += f" - {server_msg}"
+            raise PccsError(msg)
+
+        return result
+
+    def get_parking_climate_timer_settings(self, vin: str) -> dict:
+        """Get parking climate timer settings for a vehicle.
+
+        GetTimerSettings is a server-streaming RPC; we take the first response.
+        """
+        channel = self._get_channel()
+        method = channel.unary_stream(
+            _METHOD_GET_CLIMATE_TIMER_SETTINGS,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        request = _build_get_request(vin)
+        try:
+            responses = method(request, metadata=self._metadata(vin), timeout=30)
+            for response in responses:
+                return _parse_climate_timer_settings_response(response)
+            return _parse_climate_timer_settings_response(b"")
+        except grpc.RpcError as err:
+            _LOGGER.warning("PCCS GetTimerSettings (climate) failed: %s", err)
+            raise
+
+    def set_parking_climate_timer_settings(self, vin: str, temperature: float) -> dict:
+        """Set parking climate timer settings for a vehicle.
+
+        SetTimerSettings is a UNARY RPC (not streaming).
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+        """
+        channel = self._get_channel()
+        method = channel.unary_unary(
+            _METHOD_SET_CLIMATE_TIMER_SETTINGS,
+            request_serializer=_identity_serialize,
+            response_deserializer=_identity_deserialize,
+        )
+        request = _build_set_climate_timer_settings_request(vin, temperature)
+        try:
+            response = method(request, metadata=self._write_metadata(vin), timeout=30)
+            # SetTimerSettingsResponse has the same wire layout as SetTimersResponse
+            result = _parse_set_climate_timers_response(response)
+        except grpc.RpcError as err:
+            _LOGGER.warning("PCCS SetTimerSettings (climate) failed: %s", err)
+            raise
+
+        status = result.get("status", 0)
+        if status != 1:  # Not SUCCESS
+            status_name = _RESPONSE_STATUS_NAMES.get(status, f"STATUS_{status}")
+            server_msg = result.get("message", "")
+            msg = f"SetTimerSettings (climate) failed: {status_name}"
+            if server_msg:
+                msg += f" - {server_msg}"
+            raise PccsError(msg)
 
         return result
 

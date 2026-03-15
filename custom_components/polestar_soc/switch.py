@@ -39,6 +39,8 @@ async def async_setup_entry(
         vin = vehicle["vin"]
         entities.append(PolestarChargeTimerSwitch(coordinator, vehicle, vin))
         entities.append(PolestarClimateSwitch(coordinator, vehicle, vin))
+        for slot in range(5):
+            entities.append(PolestarClimateTimerSwitch(coordinator, vehicle, vin, slot))
 
     async_add_entities(entities)
 
@@ -185,4 +187,107 @@ class PolestarClimateSwitch(CoordinatorEntity[PolestarCoordinator], SwitchEntity
             )
         except (grpc.RpcError, PccsError) as err:
             raise HomeAssistantError(f"Failed to stop climate: {err}") from err
+        await self.coordinator.async_request_refresh()
+
+
+class PolestarClimateTimerSwitch(CoordinatorEntity[PolestarCoordinator], SwitchEntity):
+    """Parking climate timer switch — enables or disables a scheduled climate timer."""
+
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:radiator"
+
+    def __init__(
+        self,
+        coordinator: PolestarCoordinator,
+        vehicle: dict,
+        vin: str,
+        slot: int,
+    ) -> None:
+        """Initialize the climate timer switch entity.
+
+        Args:
+            slot: Timer slot index (0-4, matching the API's 0-based index field).
+        """
+        super().__init__(coordinator)
+        self._vin = vin
+        self._slot = slot
+        display_num = slot + 1  # 1-based for user display
+        self._attr_translation_key = f"climate_timer_{display_num}"
+        self._attr_unique_id = f"{vin}_climate_timer_{display_num}"
+
+        if display_num >= 3:
+            self._attr_entity_registry_enabled_default = False
+
+        model_name = "Polestar"
+        content = vehicle.get("content")
+        if content and content.get("model"):
+            model_name = content["model"].get("name", model_name)
+        year = vehicle.get("modelYear", "")
+        device_name = f"{model_name} ({year})" if year else model_name
+
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, vin)},
+            name=device_name,
+            manufacturer="Polestar",
+            model=model_name,
+            sw_version=str(year) if year else None,
+        )
+
+    def _get_timer(self) -> dict | None:
+        """Get the timer dict for this slot from coordinator data."""
+        data = self.coordinator.data
+        if not data:
+            return None
+        timers = data.get("climate_timers", {}).get(self._vin) or []
+        for timer in timers:
+            if timer.get("index") == self._slot:
+                return timer
+        return None
+
+    @property
+    def available(self) -> bool:
+        """Return False when the timer slot is empty."""
+        return super().available and self._get_timer() is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return whether this climate timer is active."""
+        timer = self._get_timer()
+        if timer is None:
+            return None
+        return timer.get("activated")
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable this climate timer."""
+        await self._set_activated(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable this climate timer."""
+        await self._set_activated(False)
+
+    async def _set_activated(self, activated: bool) -> None:
+        """Set the timer activation state, preserving all other fields."""
+        all_timers = list(self.coordinator.data.get("climate_timers", {}).get(self._vin) or [])
+
+        # Modify the target timer's activated field
+        found = False
+        for i, timer in enumerate(all_timers):
+            if timer.get("index") == self._slot:
+                all_timers[i] = {**timer, "activated": activated}
+                found = True
+                break
+
+        if not found:
+            raise HomeAssistantError(f"Climate timer {self._slot + 1} not found")
+
+        try:
+            await self.hass.async_add_executor_job(
+                self.coordinator.pccs.set_parking_climate_timers,
+                self._vin,
+                all_timers,
+            )
+        except (grpc.RpcError, PccsError) as err:
+            raise HomeAssistantError(
+                f"Failed to set climate timer {self._slot + 1}: {err}"
+            ) from err
         await self.coordinator.async_request_refresh()

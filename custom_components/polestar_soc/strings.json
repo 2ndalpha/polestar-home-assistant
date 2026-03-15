@@ -81,6 +81,9 @@
     "number": {
       "charge_limit": {
         "name": "Charge limit"
+      },
+      "climate_timer_temperature": {
+        "name": "Climate timer temperature"
       }
     },
     "time": {
@@ -89,6 +92,21 @@
       },
       "charging_end_time": {
         "name": "Charging end time"
+      },
+      "climate_timer_1_time": {
+        "name": "Climate timer 1 time"
+      },
+      "climate_timer_2_time": {
+        "name": "Climate timer 2 time"
+      },
+      "climate_timer_3_time": {
+        "name": "Climate timer 3 time"
+      },
+      "climate_timer_4_time": {
+        "name": "Climate timer 4 time"
+      },
+      "climate_timer_5_time": {
+        "name": "Climate timer 5 time"
       }
     },
     "switch": {
@@ -97,6 +115,21 @@
       },
       "climate": {
         "name": "Climate"
+      },
+      "climate_timer_1": {
+        "name": "Climate timer 1"
+      },
+      "climate_timer_2": {
+        "name": "Climate timer 2"
+      },
+      "climate_timer_3": {
+        "name": "Climate timer 3"
+      },
+      "climate_timer_4": {
+        "name": "Climate timer 4"
+      },
+      "climate_timer_5": {
+        "name": "Climate timer 5"
       }
     },
     "lock": {
