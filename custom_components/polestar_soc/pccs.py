@@ -818,6 +818,7 @@ class PccsClient:
         request = _build_set_climate_timer_settings_request(vin, temperature)
         try:
             response = method(request, metadata=self._write_metadata(vin), timeout=30)
+            # SetTimerSettingsResponse has the same wire layout as SetTimersResponse
             result = _parse_set_climate_timers_response(response)
         except grpc.RpcError as err:
             _LOGGER.warning("PCCS SetTimerSettings (climate) failed: %s", err)

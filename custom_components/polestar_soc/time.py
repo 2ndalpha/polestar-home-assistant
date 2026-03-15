@@ -220,7 +220,7 @@ class PolestarClimateTimerTimeEntity(CoordinatorEntity[PolestarCoordinator], Tim
                 break
 
         if not found:
-            raise HomeAssistantError(f"Climate timer {self._slot} not found")
+            raise HomeAssistantError(f"Climate timer {self._slot + 1} not found")
 
         try:
             await self.hass.async_add_executor_job(
@@ -230,6 +230,6 @@ class PolestarClimateTimerTimeEntity(CoordinatorEntity[PolestarCoordinator], Tim
             )
         except (grpc.RpcError, PccsError) as err:
             raise HomeAssistantError(
-                f"Failed to set climate timer {self._slot} time: {err}"
+                f"Failed to set climate timer {self._slot + 1} time: {err}"
             ) from err
         await self.coordinator.async_request_refresh()
