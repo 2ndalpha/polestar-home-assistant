@@ -139,13 +139,28 @@ class PolestarAPI:
         session: requests.Session,
         otp_resume: str,
         otp_code: str,
+        csrf_token: str = "",
     ) -> requests.Response:
-        """Submit OTP code and handle the success-form continuation."""
+        """Submit OTP code and handle the success-form continuation.
+
+        The PingFederate OTP page requires a CSRF token alongside the OTP
+        code.  The success page that follows also contains its own CSRF
+        token which must be sent with the continuation POST.
+        """
+        otp_data: dict[str, str] = {"otp": otp_code}
+        if csrf_token:
+            otp_data["cSRFToken"] = csrf_token
         resp = session.post(
             otp_resume,
-            data={"otp": otp_code},
+            data=otp_data,
             allow_redirects=False,
             timeout=HTTP_TIMEOUT,
+        )
+        _LOGGER.debug(
+            "OTP submit response: status=%s, location=%s, has_success_form=%s",
+            resp.status_code,
+            resp.headers.get("Location", ""),
+            "otp-success-form" in resp.text,
         )
         # OTP success returns a page with auto-submit form
         if "otp-success-form" in resp.text:
@@ -154,11 +169,24 @@ class PolestarAPI:
                 resp.text,
             )
             continue_url = OIDC_BASE_URL + action_match.group(1) if action_match else otp_resume
+            # Extract the CSRF token from the success page
+            continue_csrf = ""
+            csrf_match = re.search(r'name="cSRFToken"\s+value="([^"]+)"', resp.text)
+            if csrf_match:
+                continue_csrf = csrf_match.group(1)
+            continue_data: dict[str, str] = {"continue.authentication": "true"}
+            if continue_csrf:
+                continue_data["cSRFToken"] = continue_csrf
             resp = session.post(
                 continue_url,
-                data={"continue.authentication": "true"},
+                data=continue_data,
                 allow_redirects=False,
                 timeout=HTTP_TIMEOUT,
+            )
+            _LOGGER.debug(
+                "OTP continue response: status=%s, location=%s",
+                resp.status_code,
+                resp.headers.get("Location", ""),
             )
         return resp
 
@@ -172,6 +200,14 @@ class PolestarAPI:
         redirect_url = resp.headers.get("Location", "")
         parsed = urlparse(redirect_url)
         params = parse_qs(parsed.query)
+
+        # Check for error in redirect (e.g. failed OTP returns
+        # polestar-explore://...?error=access_denied)
+        if "error" in params:
+            error = params["error"][0]
+            error_desc = params.get("error_description", [""])[0]
+            _LOGGER.debug("Auth redirect contains error: %s (%s)", error, error_desc)
+            raise UpdateFailed(f"Authentication failed: {error_desc or error}")
 
         # Handle consent/confirmation
         if "code" not in params and "uid" in params:
@@ -189,7 +225,8 @@ class PolestarAPI:
             parsed = urlparse(redirect_url)
             params = parse_qs(parsed.query)
 
-        if "code" not in params:
+        # Only follow redirect if it is an HTTP(S) URL
+        if "code" not in params and parsed.scheme in ("http", "https"):
             resp = session.get(redirect_url, allow_redirects=False, timeout=HTTP_TIMEOUT)
             if resp.status_code in (302, 303):
                 redirect_url = resp.headers.get("Location", "")
@@ -197,6 +234,7 @@ class PolestarAPI:
                 params = parse_qs(parsed.query)
 
         if "code" not in params:
+            _LOGGER.debug("No auth code in redirect URL: %s", redirect_url)
             raise UpdateFailed("No authorization code received")
 
         return params["code"][0]
@@ -231,10 +269,11 @@ class PolestarAPI:
         return tokens
 
     @staticmethod
-    def _detect_otp_challenge(resp: requests.Response, resume_url: str) -> str | None:
+    def _detect_otp_challenge(resp: requests.Response, resume_url: str) -> tuple[str, str] | None:
         """Check if a credential-POST response is a 2FA challenge.
 
-        Returns the OTP resume URL if 2FA is required, or None.
+        Returns ``(otp_resume_url, csrf_token)`` if 2FA is required,
+        or ``None``.
         """
         if resp.status_code in (302, 303):
             return None  # No 2FA — redirect means success
@@ -247,8 +286,23 @@ class PolestarAPI:
             resp.text,
         )
         if not action_match:
+            # Try HTML form action attribute as fallback
+            action_match = re.search(
+                r'action="(/as/[^"]+/resume/as/authorization\.ping)"',
+                resp.text,
+            )
+        if not action_match:
             return None
-        return OIDC_BASE_URL + action_match.group(1)
+        otp_url = OIDC_BASE_URL + action_match.group(1)
+        # Extract CSRF token from the OTP challenge page
+        csrf_match = re.search(r'cSRFToken:\s*"([^"]+)"', resp.text)
+        csrf_token = csrf_match.group(1) if csrf_match else ""
+        _LOGGER.debug(
+            "OTP challenge detected: url=%s, has_csrf=%s",
+            otp_url,
+            bool(csrf_token),
+        )
+        return otp_url, csrf_token
 
     # -- Public login methods ------------------------------------------------
 
@@ -268,14 +322,15 @@ class PolestarAPI:
                 raise ConfigEntryAuthFailed("Invalid email or password")
 
             # 2SV: server returned OTP challenge page (200 with form)
-            otp_resume = self._detect_otp_challenge(resp, resume_url)
-            if otp_resume:
+            otp_result = self._detect_otp_challenge(resp, resume_url)
+            if otp_result:
+                otp_resume, csrf_token = otp_result
                 otp_code = self._get_otp_code()
                 if not otp_code:
                     raise UpdateFailed("2FA code required but not provided")
 
                 _LOGGER.debug("Submitting OTP to %s", otp_resume)
-                resp = self._submit_otp(session, otp_resume, otp_code)
+                resp = self._submit_otp(session, otp_resume, otp_code, csrf_token)
 
                 if resp.status_code not in (302, 303):
                     raise UpdateFailed(f"2FA verification failed ({resp.status_code})")
@@ -306,8 +361,9 @@ class PolestarAPI:
             if "ERR001" in resp.text or "authMessage" in resp.text:
                 raise ConfigEntryAuthFailed("Invalid email or password")
 
-            otp_resume = self._detect_otp_challenge(resp, resume_url)
-            if otp_resume:
+            otp_result = self._detect_otp_challenge(resp, resume_url)
+            if otp_result:
+                otp_resume, csrf_token = otp_result
                 # 2FA triggered — return session state for the caller to
                 # collect the OTP code and call login_complete_2fa().
                 return {
@@ -315,6 +371,7 @@ class PolestarAPI:
                     "_session_state": {
                         "session": session,
                         "otp_resume": otp_resume,
+                        "csrf_token": csrf_token,
                         "resume_url": resume_url,
                         "code_verifier": code_verifier,
                     },
@@ -334,11 +391,12 @@ class PolestarAPI:
         """
         session: requests.Session = session_state["session"]
         otp_resume: str = session_state["otp_resume"]
+        csrf_token: str = session_state.get("csrf_token", "")
         resume_url: str = session_state["resume_url"]
         code_verifier: str = session_state["code_verifier"]
 
         _LOGGER.debug("Submitting OTP to %s", otp_resume)
-        resp = self._submit_otp(session, otp_resume, otp_code)
+        resp = self._submit_otp(session, otp_resume, otp_code, csrf_token)
 
         if resp.status_code not in (302, 303):
             raise UpdateFailed(f"2FA verification failed ({resp.status_code})")
