@@ -68,10 +68,7 @@ class PolestarChargeTimeEntity(CoordinatorEntity[PolestarCoordinator], TimeEntit
             self._attr_translation_key = "charging_end_time"
             self._attr_unique_id = f"{vin}_charging_end_time"
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 
@@ -159,10 +156,7 @@ class PolestarClimateTimerTimeEntity(CoordinatorEntity[PolestarCoordinator], Tim
         if display_num >= 3:
             self._attr_entity_registry_enabled_default = False
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 

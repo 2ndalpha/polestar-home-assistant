@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import hashlib
 import logging
 import os
@@ -10,6 +11,7 @@ import re
 from collections.abc import Callable
 from urllib.parse import parse_qs, urlparse
 
+import grpc
 import requests
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -28,7 +30,8 @@ from .const import (
     PCCS_CLIENT_ID,
     PCCS_REDIRECT_URI,
     QUERY_GET_CARS,
-    QUERY_TELEMATICS,
+    QUERY_TELEMATICS_BATTERY,
+    QUERY_TELEMATICS_ODOMETER,
     REDIRECT_URI,
     SCAN_INTERVAL,
     SCOPE,
@@ -38,6 +41,186 @@ from .pccs import PccsClient
 _LOGGER = logging.getLogger(__name__)
 
 HTTP_TIMEOUT = 30
+
+# Layers tracked by _LayerHealth.
+LAYER_PCCS = "pccs"
+LAYER_CEP = "cep"
+LAYER_GRAPHQL = "graphql"
+_ALL_LAYERS = (LAYER_PCCS, LAYER_CEP, LAYER_GRAPHQL)
+
+# gRPC status codes that indicate the token was rejected by the backend
+# and warrant a single refresh-and-retry attempt.
+_AUTH_GRPC_CODES: frozenset[grpc.StatusCode] = frozenset(
+    {grpc.StatusCode.PERMISSION_DENIED, grpc.StatusCode.UNAUTHENTICATED}
+)
+
+# Sentinel returned by the per-call wrapper to mark "call failed" so the
+# caller can distinguish failure from a getter that legitimately returns
+# None (defensive — currently no getter does, but the contract is now
+# explicit).
+_FAILED: object = object()
+
+
+class _GrpcAuthError(Exception):
+    """Internal signal: a gRPC call returned PERMISSION_DENIED / UNAUTHENTICATED.
+
+    Raised by ``_do_fetch`` when the *first* such failure of an update cycle
+    is observed.  Caught in ``_async_update_data`` to trigger one token
+    refresh + channel reset + retry.  Carries the layer name so the retry
+    can record which layer triggered it.
+    """
+
+    def __init__(self, layer: str) -> None:
+        super().__init__(f"gRPC auth failure on layer={layer}")
+        self.layer = layer
+
+
+class _LayerHealth:
+    """Per-layer health tracker for the coordinator.
+
+    Tracks, for each API layer (``pccs``, ``cep``, ``graphql``):
+      * ``consecutive_failures`` — cycles since last successful call.  A
+        cycle counts as a failure only if **no** call to the layer
+        succeeded; partial success resets the counter to 0.
+      * ``last_code`` — string representation of the most recent failure
+        code (gRPC status name or ``"error"`` for non-gRPC).
+      * ``last_success_at`` — ISO 8601 UTC timestamp of the last
+        successful call, or ``None``.
+      * ``failing_endpoints`` — set of endpoint names that failed during
+        the most recent cycle.  Cleared at the start of each cycle.
+
+    Warning policy: the first failure with a given ``(layer, code)`` tuple
+    logs at ``WARNING``; identical repeats log at ``DEBUG``.  The
+    warned-set is cleared only at the end of a *fully clean* cycle (at
+    least one success, zero failures) — partial-failure cycles keep the
+    warned-set so a persistent broken endpoint does not re-warn every
+    poll.  This matches the spec intent ("warn once per outage") while
+    handling the realistic partial-failure case (e.g. one GraphQL
+    sub-query permanently broken, others working).
+    """
+
+    def __init__(self) -> None:
+        self._state: dict[str, dict] = {
+            layer: {
+                "consecutive_failures": 0,
+                "last_code": None,
+                "last_success_at": None,
+                "failing_endpoints": set(),
+                "_warned_codes": set(),
+                "_had_success_this_cycle": False,
+                "_had_failure_this_cycle": False,
+            }
+            for layer in _ALL_LAYERS
+        }
+
+    def start_cycle(self) -> None:
+        """Reset per-cycle state.  Called at the top of ``_do_fetch``."""
+        for state in self._state.values():
+            state["failing_endpoints"] = set()
+            state["_had_success_this_cycle"] = False
+            state["_had_failure_this_cycle"] = False
+
+    def end_cycle(self) -> None:
+        """Update consecutive-failure counters and warned-set based on the cycle.
+
+        - A cycle with at least one success and zero failures = full recovery
+          → reset ``consecutive_failures`` to 0 and clear the warned-set so a
+          future outage warns fresh.
+        - A cycle with at least one success and at least one failure = partial
+          → reset ``consecutive_failures`` to 0 but keep the warned-set so the
+          persistent failing endpoint does not re-warn every cycle.
+        - A cycle with only failures → increment ``consecutive_failures``,
+          keep warned-set.
+        - A cycle with no calls → unchanged.
+        """
+        for state in self._state.values():
+            had_success = state["_had_success_this_cycle"]
+            had_failure = state["_had_failure_this_cycle"]
+            if had_success and not had_failure:
+                state["consecutive_failures"] = 0
+                state["_warned_codes"] = set()
+            elif had_success and had_failure:
+                state["consecutive_failures"] = 0
+            elif had_failure:
+                state["consecutive_failures"] += 1
+
+    def record_success(self, layer: str, endpoint: str) -> None:
+        """Record a successful call."""
+        state = self._state[layer]
+        state["_had_success_this_cycle"] = True
+        state["last_success_at"] = datetime.datetime.now(datetime.UTC).isoformat()
+        state["failing_endpoints"].discard(endpoint)
+
+    def record_failure(self, layer: str, endpoint: str, err: BaseException) -> str:
+        """Record a failed call.  Warns once per ``(layer, code)`` tuple.
+
+        Returns the classified code string (e.g. ``"PERMISSION_DENIED"``
+        or ``"error"``) so callers can use it for the auth-retry decision.
+        """
+        state = self._state[layer]
+        state["_had_failure_this_cycle"] = True
+        state["failing_endpoints"].add(endpoint)
+
+        code = _classify_error(err)
+        state["last_code"] = code
+
+        msg = "%s call %s failed: %s (%s)"
+        if code in state["_warned_codes"]:
+            _LOGGER.debug(msg, layer, endpoint, code, err)
+        else:
+            state["_warned_codes"].add(code)
+            _LOGGER.warning(msg, layer, endpoint, code, err)
+
+        return code
+
+    def to_dict(self) -> dict:
+        """Snapshot the current health into a serializable dict for sensors."""
+        result: dict[str, dict] = {}
+        for layer in _ALL_LAYERS:
+            state = self._state[layer]
+            failures = state["consecutive_failures"]
+            if failures >= 2:
+                status = "down"
+            elif failures == 1:
+                status = "degraded"
+            else:
+                status = "ok"
+            result[layer] = {
+                "status": status,
+                "last_code": state["last_code"],
+                "last_success_at": state["last_success_at"],
+                "failing_endpoints": sorted(state["failing_endpoints"]),
+                "consecutive_failures": failures,
+            }
+        return result
+
+
+class _NonGrpcError(Exception):
+    """Marker for failures that are not gRPC errors (used by ``_classify_error``)."""
+
+
+def _classify_error(err: BaseException) -> str:
+    """Classify an exception into a stable code string for log dedup + UI."""
+    if isinstance(err, grpc.RpcError):
+        try:
+            code = err.code()
+        except Exception:
+            return "RPC_ERROR"
+        if code is None:
+            return "RPC_ERROR"
+        return code.name
+    return type(err).__name__
+
+
+def _drop_none(d: dict) -> dict:
+    """Return a copy of ``d`` with ``None`` values removed.
+
+    Used so sensors see a missing key (returning ``None`` and rendering
+    ``unavailable``) only when there is genuinely no data — not when a
+    failed call fell through to the previous-cycle fallback that also
+    had no value.
+    """
+    return {k: v for k, v in d.items() if v is not None}
 
 
 def _b64urlencode(data: bytes) -> str:
@@ -451,10 +634,48 @@ class PolestarAPI:
         data = self._graphql(QUERY_GET_CARS)
         return data.get("getConsumerCarsV2", [])
 
-    def get_telematics(self, vins: list[str]) -> dict:
-        """Fetch telematics data for given VINs."""
-        data = self._graphql(QUERY_TELEMATICS, {"vins": vins})
-        return data.get("carTelematicsV2", {})
+    def get_telematics(self, vins: list[str]) -> tuple[dict, list[str]]:
+        """Fetch telematics data for given VINs.
+
+        Issues the battery and odometer queries independently so a
+        schema-validation failure on one (e.g. Polestar removing the
+        ``battery`` field per evcc #27726) does not take the other down.
+
+        Returns ``(data, failing_endpoints)`` where ``data`` matches the
+        legacy shape ``{"battery": [...], "odometer": [...]}`` and
+        ``failing_endpoints`` lists names like ``"carTelematicsV2.battery"``
+        for sub-queries that raised ``UpdateFailed``.
+
+        If both sub-queries fail, ``UpdateFailed`` is re-raised so the
+        coordinator surfaces the outage. HTTP 401s are not caught here —
+        ``requests.HTTPError`` propagates so the existing 401 retry path
+        in ``_async_update_data`` still triggers.
+        """
+        result: dict = {"battery": [], "odometer": []}
+        failing: list[str] = []
+        battery_err: Exception | None = None
+        odometer_err: Exception | None = None
+
+        try:
+            data = self._graphql(QUERY_TELEMATICS_BATTERY, {"vins": vins})
+            result["battery"] = data.get("carTelematicsV2", {}).get("battery", []) or []
+        except UpdateFailed as err:
+            battery_err = err
+            failing.append("carTelematicsV2.battery")
+
+        try:
+            data = self._graphql(QUERY_TELEMATICS_ODOMETER, {"vins": vins})
+            result["odometer"] = data.get("carTelematicsV2", {}).get("odometer", []) or []
+        except UpdateFailed as err:
+            odometer_err = err
+            failing.append("carTelematicsV2.odometer")
+
+        if battery_err and odometer_err:
+            raise UpdateFailed(
+                f"GraphQL telematics: battery={battery_err}; odometer={odometer_err}"
+            )
+
+        return result, failing
 
 
 class PolestarCoordinator(DataUpdateCoordinator):
@@ -496,21 +717,61 @@ class PolestarCoordinator(DataUpdateCoordinator):
         )
         self._email: str = entry.data["email"]
         self._password: str = entry.data["password"]
+        self._health = _LayerHealth()
 
     async def _async_update_data(self) -> dict:
-        """Fetch data from the Polestar API."""
+        """Fetch data from the Polestar API.
+
+        Two distinct retry paths exist:
+
+        1. **HTTP 401 from GraphQL** → refresh tokens, retry once.
+        2. **gRPC PERMISSION_DENIED / UNAUTHENTICATED** → refresh tokens,
+           reset both gRPC channels, retry once.
+
+        Both paths cap at one retry per cycle.  After a retry the second
+        ``_fetch_data`` invocation runs with ``auth_retry_used=True``,
+        which prevents the executor-side code from raising
+        ``_GrpcAuthError`` again even if the second attempt also fails —
+        further failures are recorded via ``_LayerHealth`` instead.
+        """
         try:
             return await self._fetch_data()
+        except _GrpcAuthError as err:
+            _LOGGER.debug(
+                "gRPC auth failure on layer=%s, refreshing tokens and retrying",
+                err.layer,
+            )
+            try:
+                await self._refresh_or_relogin()
+            except ConfigEntryAuthFailed:
+                raise
+            except Exception as refresh_err:
+                raise UpdateFailed(
+                    f"Token refresh failed after gRPC auth error: {refresh_err}"
+                ) from refresh_err
+            # Reset both gRPC channels so the next call picks up the new
+            # token in fresh metadata and any channel-level rejection
+            # (cookie / SNI / session) is cleared.
+            self.pccs.close()
+            self.cep.close()
+            try:
+                return await self._fetch_data(auth_retry_used=True)
+            except ConfigEntryAuthFailed:
+                raise
+            except Exception as retry_err:
+                raise UpdateFailed(
+                    f"API error after gRPC auth retry: {retry_err}"
+                ) from retry_err
         except requests.HTTPError as err:
             if err.response is not None and err.response.status_code == 401:
                 _LOGGER.debug("Access token expired, attempting refresh")
             else:
                 raise UpdateFailed(f"API error: {err}") from err
 
-        # Token expired — try refresh
+        # HTTP 401 path: refresh tokens, retry once.
         try:
             await self._refresh_or_relogin()
-            return await self._fetch_data()
+            return await self._fetch_data(auth_retry_used=True)
         except ConfigEntryAuthFailed:
             raise
         except Exception as err:
@@ -566,123 +827,208 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 "Re-login failed. Please reconfigure the integration."
             ) from err
 
-    async def _fetch_data(self) -> dict:
-        """Fetch vehicles, telematics, and PCCS data (blocking, run in executor)."""
+    async def _fetch_data(self, *, auth_retry_used: bool = False) -> dict:
+        """Fetch vehicles, telematics, and PCCS data (blocking, run in executor).
 
-        def _do_fetch() -> dict:
+        ``auth_retry_used`` is propagated from ``_async_update_data``: when
+        ``True``, gRPC auth failures are recorded via ``_LayerHealth``
+        instead of raising ``_GrpcAuthError`` (which would re-trigger
+        another refresh-and-retry).
+        """
+        return await self.hass.async_add_executor_job(self._do_fetch, auth_retry_used)
+
+    def _do_fetch(self, auth_retry_used: bool) -> dict:
+        """Synchronous fetch path — runs in the executor thread.
+
+        Per-call gRPC failures are routed through the layer health tracker.
+        On the first PERMISSION_DENIED / UNAUTHENTICATED of the cycle (and
+        only if ``auth_retry_used`` is False), ``_GrpcAuthError`` is raised
+        so the async caller can refresh tokens and retry exactly once.
+        """
+        # Mutable per-cycle state.  Once an auth retry is "used" (either
+        # because the caller already retried, or because we just raised
+        # _GrpcAuthError on this layer in this cycle), no further raise
+        # happens — subsequent failures fall through to the health tracker.
+        retry_used = [auth_retry_used]
+        previous = self.data or {}
+        health = self._health
+        health.start_cycle()
+
+        def call(layer: str, endpoint: str, fn: Callable[[], object]) -> object:
+            """Run ``fn``, classify any exception, return result or ``_FAILED`` on failure.
+
+            Returns the sentinel ``_FAILED`` on failure so callers can
+            distinguish "call failed" from "call returned None" (which
+            would otherwise be a stale-data trap if any getter ever
+            legitimately returns ``None``).
+
+            Order of catch arms matters: ``_GrpcAuthError`` must propagate
+            to the async caller, so it appears above the general
+            ``grpc.RpcError`` handler.
+            """
+            try:
+                result = fn()
+            except _GrpcAuthError:
+                raise
+            except grpc.RpcError as err:
+                health.record_failure(layer, endpoint, err)
+                if not retry_used[0] and err.code() in _AUTH_GRPC_CODES:
+                    retry_used[0] = True
+                    raise _GrpcAuthError(layer) from err
+                return _FAILED
+            except Exception:
+                _LOGGER.debug("Failed %s/%s (non-gRPC)", layer, endpoint, exc_info=True)
+                health.record_failure(
+                    layer, endpoint, _NonGrpcError(f"{layer}/{endpoint}")
+                )
+                return _FAILED
+            health.record_success(layer, endpoint)
+            return result
+
+        def call_or_keep(
+            layer: str, endpoint: str, vin: str, fn: Callable[[], object]
+        ) -> object | None:
+            """Like ``call``, but on failure preserves previous cycle's per-VIN data."""
+            result = call(layer, endpoint, fn)
+            if result is not _FAILED:
+                return result
+            return previous.get(endpoint, {}).get(vin)
+
+        # ---- GraphQL: vehicle list ----
+        try:
             vehicles = self.api.get_vehicles()
-            if not vehicles:
-                return {
-                    "vehicles": [],
-                    "battery": {},
-                    "odometer": {},
-                    "target_soc": {},
-                    "amp_limit": {},
-                    "charge_timer": {},
-                    "climate_timers": {},
-                    "climate_timer_settings": {},
-                    "climate": {},
-                    "cep_battery": {},
-                    "location": {},
-                    "exterior": {},
-                    "availability": {},
-                    "health": {},
-                }
+            health.record_success(LAYER_GRAPHQL, "getConsumerCarsV2")
+        except UpdateFailed as err:
+            health.record_failure(LAYER_GRAPHQL, "getConsumerCarsV2", err)
+            health.end_cycle()
+            raise
+        except requests.HTTPError:
+            # Let HTTP 401 propagate to the async layer's existing retry.
+            raise
 
-            vins = [v["vin"] for v in vehicles]
-            telematics = self.api.get_telematics(vins)
-
-            battery_by_vin: dict = {}
-            for b in telematics.get("battery", []) or []:
-                if b:
-                    battery_by_vin[b["vin"]] = b
-
-            odometer_by_vin: dict = {}
-            for o in telematics.get("odometer", []) or []:
-                if o:
-                    odometer_by_vin[o["vin"]] = o
-
-            # Fetch PCCS data (charge target + timer + climate timers) per VIN
-            target_soc_by_vin: dict = {}
-            amp_limit_by_vin: dict = {}
-            charge_timer_by_vin: dict = {}
-            climate_timers_by_vin: dict = {}
-            climate_timer_settings_by_vin: dict = {}
-            for vin in vins:
-                try:
-                    target_soc_by_vin[vin] = self.pccs.get_target_soc(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch PCCS target SOC for %s", vin)
-                try:
-                    amp_limit_by_vin[vin] = self.pccs.get_amp_limit(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch PCCS amp limit for %s", vin)
-                try:
-                    charge_timer_by_vin[vin] = self.pccs.get_global_charge_timer(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch PCCS charge timer for %s", vin)
-                try:
-                    climate_timers_by_vin[vin] = self.pccs.get_parking_climate_timers(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch PCCS climate timers for %s", vin)
-                try:
-                    climate_timer_settings_by_vin[vin] = (
-                        self.pccs.get_parking_climate_timer_settings(vin)
-                    )
-                except Exception:
-                    _LOGGER.debug("Failed to fetch PCCS climate timer settings for %s", vin)
-
-            # Fetch CEP data (climate status + battery + location) per VIN
-            climate_by_vin: dict = {}
-            cep_battery_by_vin: dict = {}
-            location_by_vin: dict = {}
-            exterior_by_vin: dict = {}
-            availability_by_vin: dict = {}
-            health_by_vin: dict = {}
-            for vin in vins:
-                try:
-                    climate_by_vin[vin] = self.cep.get_parking_climatization(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch CEP climate for %s", vin)
-                try:
-                    cep_battery_by_vin[vin] = self.cep.get_battery(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch CEP battery for %s", vin)
-                try:
-                    location_by_vin[vin] = self.cep.get_location(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch CEP location for %s", vin)
-                try:
-                    exterior_by_vin[vin] = self.cep.get_exterior(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch CEP exterior for %s", vin)
-                try:
-                    availability_by_vin[vin] = self.cep.get_availability(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch CEP availability for %s", vin)
-                try:
-                    health_by_vin[vin] = self.cep.get_health(vin)
-                except Exception:
-                    _LOGGER.debug("Failed to fetch CEP health for %s", vin)
-
+        if not vehicles:
+            health.end_cycle()
             return {
-                "vehicles": vehicles,
-                "battery": battery_by_vin,
-                "odometer": odometer_by_vin,
-                "target_soc": target_soc_by_vin,
-                "amp_limit": amp_limit_by_vin,
-                "charge_timer": charge_timer_by_vin,
-                "climate_timers": climate_timers_by_vin,
-                "climate_timer_settings": climate_timer_settings_by_vin,
-                "climate": climate_by_vin,
-                "cep_battery": cep_battery_by_vin,
-                "location": location_by_vin,
-                "exterior": exterior_by_vin,
-                "availability": availability_by_vin,
-                "health": health_by_vin,
+                "vehicles": [],
+                "battery": {},
+                "odometer": {},
+                "target_soc": {},
+                "amp_limit": {},
+                "charge_timer": {},
+                "climate_timers": {},
+                "climate_timer_settings": {},
+                "climate": {},
+                "cep_battery": {},
+                "location": {},
+                "exterior": {},
+                "availability": {},
+                "health": {},
+                "api_health": health.to_dict(),
             }
 
-        return await self.hass.async_add_executor_job(_do_fetch)
+        vins = [v["vin"] for v in vehicles]
+
+        # ---- GraphQL: telematics (battery + odometer split) ----
+        try:
+            telematics, graphql_failing = self.api.get_telematics(vins)
+        except UpdateFailed as err:
+            # Both sub-queries failed — record both endpoints, then re-raise.
+            for endpoint in ("carTelematicsV2.battery", "carTelematicsV2.odometer"):
+                health.record_failure(LAYER_GRAPHQL, endpoint, err)
+            health.end_cycle()
+            raise
+        # Mark whichever sub-queries succeeded vs failed.  Partial success
+        # keeps the layer "ok" but listed endpoints stay in failing_endpoints.
+        for endpoint in graphql_failing:
+            # Use a synthetic GraphQL error type for layer-tracking purposes.
+            health.record_failure(LAYER_GRAPHQL, endpoint, _NonGrpcError(endpoint))
+        if "carTelematicsV2.battery" not in graphql_failing:
+            health.record_success(LAYER_GRAPHQL, "carTelematicsV2.battery")
+        if "carTelematicsV2.odometer" not in graphql_failing:
+            health.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+
+        battery_by_vin: dict = {}
+        for b in telematics.get("battery", []) or []:
+            if b:
+                battery_by_vin[b["vin"]] = b
+
+        odometer_by_vin: dict = {}
+        for o in telematics.get("odometer", []) or []:
+            if o:
+                odometer_by_vin[o["vin"]] = o
+
+        # ---- PCCS: per-VIN reads ----
+        target_soc_by_vin: dict = {}
+        amp_limit_by_vin: dict = {}
+        charge_timer_by_vin: dict = {}
+        climate_timers_by_vin: dict = {}
+        climate_timer_settings_by_vin: dict = {}
+        for vin in vins:
+            target_soc_by_vin[vin] = call_or_keep(
+                LAYER_PCCS, "target_soc", vin, lambda v=vin: self.pccs.get_target_soc(v)
+            )
+            amp_limit_by_vin[vin] = call_or_keep(
+                LAYER_PCCS, "amp_limit", vin, lambda v=vin: self.pccs.get_amp_limit(v)
+            )
+            charge_timer_by_vin[vin] = call_or_keep(
+                LAYER_PCCS, "charge_timer", vin,
+                lambda v=vin: self.pccs.get_global_charge_timer(v),
+            )
+            climate_timers_by_vin[vin] = call_or_keep(
+                LAYER_PCCS, "climate_timers", vin,
+                lambda v=vin: self.pccs.get_parking_climate_timers(v),
+            )
+            climate_timer_settings_by_vin[vin] = call_or_keep(
+                LAYER_PCCS, "climate_timer_settings", vin,
+                lambda v=vin: self.pccs.get_parking_climate_timer_settings(v),
+            )
+
+        # ---- CEP: per-VIN reads ----
+        climate_by_vin: dict = {}
+        cep_battery_by_vin: dict = {}
+        location_by_vin: dict = {}
+        exterior_by_vin: dict = {}
+        availability_by_vin: dict = {}
+        health_by_vin: dict = {}
+        for vin in vins:
+            climate_by_vin[vin] = call_or_keep(
+                LAYER_CEP, "climate", vin,
+                lambda v=vin: self.cep.get_parking_climatization(v),
+            )
+            cep_battery_by_vin[vin] = call_or_keep(
+                LAYER_CEP, "cep_battery", vin, lambda v=vin: self.cep.get_battery(v)
+            )
+            location_by_vin[vin] = call_or_keep(
+                LAYER_CEP, "location", vin, lambda v=vin: self.cep.get_location(v)
+            )
+            exterior_by_vin[vin] = call_or_keep(
+                LAYER_CEP, "exterior", vin, lambda v=vin: self.cep.get_exterior(v)
+            )
+            availability_by_vin[vin] = call_or_keep(
+                LAYER_CEP, "availability", vin, lambda v=vin: self.cep.get_availability(v)
+            )
+            health_by_vin[vin] = call_or_keep(
+                LAYER_CEP, "health", vin, lambda v=vin: self.cep.get_health(v)
+            )
+
+        health.end_cycle()
+        return {
+            "vehicles": vehicles,
+            "battery": battery_by_vin,
+            "odometer": odometer_by_vin,
+            "target_soc": _drop_none(target_soc_by_vin),
+            "amp_limit": _drop_none(amp_limit_by_vin),
+            "charge_timer": _drop_none(charge_timer_by_vin),
+            "climate_timers": _drop_none(climate_timers_by_vin),
+            "climate_timer_settings": _drop_none(climate_timer_settings_by_vin),
+            "climate": _drop_none(climate_by_vin),
+            "cep_battery": _drop_none(cep_battery_by_vin),
+            "location": _drop_none(location_by_vin),
+            "exterior": _drop_none(exterior_by_vin),
+            "availability": _drop_none(availability_by_vin),
+            "health": _drop_none(health_by_vin),
+            "api_health": health.to_dict(),
+        }
 
     def _update_stored_tokens(self) -> None:
         """Persist refreshed tokens in config entry."""

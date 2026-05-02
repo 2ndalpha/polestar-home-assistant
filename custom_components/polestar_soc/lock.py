@@ -51,10 +51,7 @@ class PolestarLock(CoordinatorEntity[PolestarCoordinator], LockEntity):
         self._vin = vin
         self._attr_unique_id = f"{vin}_lock"
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 

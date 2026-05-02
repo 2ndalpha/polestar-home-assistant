@@ -1,9 +1,39 @@
 """Shared fixtures for Polestar SOC tests."""
 
+import grpc
 import pytest
 
 # Activate the pytest-homeassistant-custom-component plugin
 pytest_plugins = "pytest_homeassistant_custom_component"
+
+
+# ---------------------------------------------------------------------------
+# Shared gRPC error helper for resilience tests
+# ---------------------------------------------------------------------------
+
+
+class FakeRpcError(grpc.RpcError):
+    """Real-exception subclass with .code() and .details(), suitable for ``side_effect``.
+
+    ``MagicMock(spec=grpc.RpcError)`` cannot be raised because the mock is
+    not a real Exception instance.  This stand-in is.
+    """
+
+    def __init__(self, code: grpc.StatusCode, details: str = "boom") -> None:
+        super().__init__(f"{code.name}: {details}")
+        self._code = code
+        self._details = details
+
+    def code(self) -> grpc.StatusCode:
+        return self._code
+
+    def details(self) -> str:
+        return self._details
+
+
+def make_rpc_error(code: grpc.StatusCode, details: str = "boom") -> grpc.RpcError:
+    """Build a gRPC RpcError with the given status code."""
+    return FakeRpcError(code, details)
 
 
 @pytest.fixture
@@ -13,8 +43,7 @@ def sample_vehicle():
         "vin": "YSMYKEAE1RB000001",
         "internalVehicleIdentifier": "abc123",
         "modelYear": 2025,
-        "content": {"model": {"code": "534", "name": "Polestar 4"}},
-        "hasPerformancePackage": False,
+        "modelName": "Polestar 4",
         "registrationNo": "ABC123",
         "deliveryDate": "2025-03-01",
         "currentPlannedDeliveryDate": "2025-03-01",
@@ -239,4 +268,27 @@ def sample_coordinator_data(
         "exterior": {vin: sample_exterior},
         "availability": {vin: sample_availability},
         "health": {vin: sample_health},
+        "api_health": {
+            "pccs": {
+                "status": "ok",
+                "last_code": None,
+                "last_success_at": None,
+                "failing_endpoints": [],
+                "consecutive_failures": 0,
+            },
+            "cep": {
+                "status": "ok",
+                "last_code": None,
+                "last_success_at": None,
+                "failing_endpoints": [],
+                "consecutive_failures": 0,
+            },
+            "graphql": {
+                "status": "ok",
+                "last_code": None,
+                "last_success_at": None,
+                "failing_endpoints": [],
+                "consecutive_failures": 0,
+            },
+        },
     }

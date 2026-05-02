@@ -15,6 +15,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfLength, UnitOfPower, UnitOfPressure, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -377,11 +378,15 @@ async def async_setup_entry(
     """Set up Polestar sensors from a config entry."""
     coordinator: PolestarCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities: list[PolestarSensor] = []
+    entities: list[SensorEntity] = []
     for vehicle in coordinator.data.get("vehicles", []):
         vin = vehicle["vin"]
         for description in SENSOR_DESCRIPTIONS:
             entities.append(PolestarSensor(coordinator, description, vehicle, vin))
+
+    # One diagnostic sensor per config entry (not per VIN) exposing the
+    # health of the PCCS / CEP / GraphQL API layers.
+    entities.append(PolestarApiHealthSensor(coordinator, entry))
 
     async_add_entities(entities)
 
@@ -405,10 +410,7 @@ class PolestarSensor(CoordinatorEntity[PolestarCoordinator], SensorEntity):
         self._vin = vin
         self._attr_unique_id = f"{vin}_{description.key}"
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 
@@ -427,3 +429,54 @@ class PolestarSensor(CoordinatorEntity[PolestarCoordinator], SensorEntity):
         if not data:
             return None
         return self.entity_description.value_fn(data, self._vin)
+
+
+_API_HEALTH_OPTIONS = ["ok", "degraded", "down"]
+
+
+class PolestarApiHealthSensor(CoordinatorEntity[PolestarCoordinator], SensorEntity):
+    """Diagnostic sensor reporting the health of each Polestar API layer.
+
+    State derives from the worst per-layer ``consecutive_failures`` count:
+    ``down`` if any layer has ≥2, ``degraded`` if any has 1, else ``ok``.
+
+    Attributes mirror the per-layer dict from ``_LayerHealth.to_dict()``
+    so users can drill into specific failing endpoints from the More
+    Info panel without checking logs.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "api_health"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = _API_HEALTH_OPTIONS
+
+    def __init__(self, coordinator: PolestarCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{DOMAIN}_{entry.entry_id}_api_health"
+
+    @property
+    def native_value(self) -> str:
+        """Return the worst per-layer status as the overall sensor state."""
+        api_health = (self.coordinator.data or {}).get("api_health") or {}
+        worst = "ok"
+        for layer in api_health.values():
+            failures = layer.get("consecutive_failures", 0)
+            if failures >= 2:
+                return "down"
+            if failures == 1:
+                worst = "degraded"
+        return worst
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose per-layer health for drill-down."""
+        api_health = (self.coordinator.data or {}).get("api_health") or {}
+        result: dict = {}
+        for layer, state in api_health.items():
+            result[f"{layer}_status"] = state.get("status")
+            result[f"last_{layer}_code"] = state.get("last_code")
+            result[f"last_{layer}_success_at"] = state.get("last_success_at")
+            result[f"{layer}_failing_endpoints"] = state.get("failing_endpoints", [])
+            result[f"{layer}_consecutive_failures"] = state.get("consecutive_failures", 0)
+        return result
