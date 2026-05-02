@@ -12,8 +12,6 @@ htmlcov/
 .venv/
 research/
 plans/
-scripts/*
-!scripts/diagnose_apis.py
-!scripts/login_and_cache_tokens.py
+scripts/
 pr-reviews/
 android-decompiled/

@@ -98,33 +98,6 @@ known value per VIN** so sensors don't flip to `unavailable` on every
 blip. Check the API health attributes if you need to know whether a
 sensor's value is fresh or stale.
 
-### Diagnostic probe script
-
-For deeper triage — for example, when filing an issue about a
-backend-side change like
-[#20](https://github.com/2ndalpha/polestar-home-assistant/issues/20) —
-run the diagnostic probe:
-
-```bash
-.venv/bin/python scripts/diagnose_apis.py
-.venv/bin/python scripts/diagnose_apis.py --vin <YOUR_VIN>
-.venv/bin/python scripts/diagnose_apis.py --out report.txt
-```
-
-The script logs into Polestar (using `POLESTAR_EMAIL` /
-`POLESTAR_PASSWORD` env vars or interactive prompts), then probes every
-API layer for one VIN and prints a table of per-endpoint status, plus
-decoded JWT claims.
-
-Output is **redacted by default** (email, JWT `sub` claim, and the last
-six characters of the VIN are masked). Pass `--unredacted` only when
-you've reviewed the output and confirmed it's safe to share.
-
-The script distinguishes "auth failed at login" from "auth ok, endpoints
-rejected" in its summary line — the latter is the signature of a
-backend-side change and is what you want to confirm before opening a
-bug.
-
 ## Development
 
 ```bash
