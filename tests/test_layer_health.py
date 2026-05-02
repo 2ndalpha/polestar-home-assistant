@@ -148,9 +148,7 @@ class TestLayerHealthCycleAccounting:
         h = _LayerHealth()
         for _ in range(3):
             h.start_cycle()
-            h.record_failure(
-                LAYER_CEP, "battery", _rpc_error(grpc.StatusCode.PERMISSION_DENIED)
-            )
+            h.record_failure(LAYER_CEP, "battery", _rpc_error(grpc.StatusCode.PERMISSION_DENIED))
             h.end_cycle()
         assert h.to_dict()[LAYER_CEP]["consecutive_failures"] == 3
 
@@ -186,9 +184,7 @@ class TestLayerHealthWarnOnce:
         assert "PERMISSION_DENIED" in warnings[0].getMessage()
         assert "target_soc" in warnings[0].getMessage()
 
-    def test_repeat_failure_does_not_re_warn(
-        self, caplog: pytest.LogCaptureFixture
-    ):
+    def test_repeat_failure_does_not_re_warn(self, caplog: pytest.LogCaptureFixture):
         h = _LayerHealth()
         with caplog.at_level(logging.WARNING, logger="custom_components.polestar_soc.coordinator"):
             for _ in range(3):
@@ -200,9 +196,7 @@ class TestLayerHealthWarnOnce:
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1, [r.getMessage() for r in warnings]
 
-    def test_recovery_then_failure_warns_again(
-        self, caplog: pytest.LogCaptureFixture
-    ):
+    def test_recovery_then_failure_warns_again(self, caplog: pytest.LogCaptureFixture):
         h = _LayerHealth()
         with caplog.at_level(logging.WARNING, logger="custom_components.polestar_soc.coordinator"):
             h.start_cycle()
@@ -225,9 +219,7 @@ class TestLayerHealthWarnOnce:
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 2
 
-    def test_partial_success_does_not_clear_warned_set(
-        self, caplog: pytest.LogCaptureFixture
-    ):
+    def test_partial_success_does_not_clear_warned_set(self, caplog: pytest.LogCaptureFixture):
         """If one endpoint is persistently broken and others succeed, do not re-warn."""
         h = _LayerHealth()
         with caplog.at_level(logging.WARNING, logger="custom_components.polestar_soc.coordinator"):
@@ -250,9 +242,7 @@ class TestLayerHealthWarnOnce:
             h.record_failure(
                 LAYER_PCCS, "target_soc", _rpc_error(grpc.StatusCode.PERMISSION_DENIED)
             )
-            h.record_failure(
-                LAYER_PCCS, "amp_limit", _rpc_error(grpc.StatusCode.UNAVAILABLE)
-            )
+            h.record_failure(LAYER_PCCS, "amp_limit", _rpc_error(grpc.StatusCode.UNAVAILABLE))
             h.end_cycle()
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 2

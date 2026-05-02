@@ -133,9 +133,7 @@ class TestDoFetchHappyPath:
 
 
 class TestDoFetchAuthRetrySignal:
-    def test_first_permission_denied_raises_grpc_auth_error(
-        self, coordinator: PolestarCoordinator
-    ):
+    def test_first_permission_denied_raises_grpc_auth_error(self, coordinator: PolestarCoordinator):
         coordinator.pccs.get_target_soc = MagicMock(
             side_effect=_rpc_error(grpc.StatusCode.PERMISSION_DENIED)
         )
@@ -160,9 +158,7 @@ class TestDoFetchAuthRetrySignal:
         coordinator.pccs.get_amp_limit = MagicMock(side_effect=unavailable)
         coordinator.pccs.get_global_charge_timer = MagicMock(side_effect=unavailable)
         coordinator.pccs.get_parking_climate_timers = MagicMock(side_effect=unavailable)
-        coordinator.pccs.get_parking_climate_timer_settings = MagicMock(
-            side_effect=unavailable
-        )
+        coordinator.pccs.get_parking_climate_timer_settings = MagicMock(side_effect=unavailable)
         result = coordinator._do_fetch(auth_retry_used=False)
         # Full-failure cycle → degraded after 1 cycle, last_code recorded.
         assert result["api_health"]["pccs"]["status"] == "degraded"
@@ -185,9 +181,7 @@ class TestDoFetchAuthRetrySignal:
         assert result["api_health"]["pccs"]["status"] == "degraded"
         assert result["api_health"]["pccs"]["last_code"] == "PERMISSION_DENIED"
 
-    def test_only_first_failure_raises_in_a_cycle(
-        self, coordinator: PolestarCoordinator
-    ):
+    def test_only_first_failure_raises_in_a_cycle(self, coordinator: PolestarCoordinator):
         """Once the auth-retry slot is used, later PERMISSION_DENIEDs do not re-raise."""
         # PCCS fails first → raises → cycle aborts before CEP runs.
         coordinator.pccs.get_target_soc = MagicMock(
@@ -202,9 +196,7 @@ class TestDoFetchAuthRetrySignal:
 
 
 class TestDoFetchLastKnownGood:
-    def test_preserves_previous_value_on_failure(
-        self, coordinator: PolestarCoordinator
-    ):
+    def test_preserves_previous_value_on_failure(self, coordinator: PolestarCoordinator):
         # Prime self.data with a previous-cycle target_soc value.
         coordinator.data = {
             "target_soc": {VIN: {"target_soc": 90}},
@@ -218,9 +210,7 @@ class TestDoFetchLastKnownGood:
         # Previous value preserved.
         assert result["target_soc"] == {VIN: {"target_soc": 90}}
 
-    def test_no_previous_value_means_unavailable(
-        self, coordinator: PolestarCoordinator
-    ):
+    def test_no_previous_value_means_unavailable(self, coordinator: PolestarCoordinator):
         coordinator.data = None  # initial setup
         coordinator.pccs.get_target_soc = MagicMock(
             side_effect=_rpc_error(grpc.StatusCode.UNAVAILABLE)
@@ -241,7 +231,8 @@ class TestDoFetchWarnOnce:
             for _ in range(3):
                 coordinator._do_fetch(auth_retry_used=True)
         warnings = [
-            r for r in caplog.records
+            r
+            for r in caplog.records
             if r.levelno == logging.WARNING and "UNAVAILABLE" in r.getMessage()
         ]
         assert len(warnings) == 1
@@ -266,12 +257,11 @@ class TestAsyncUpdateDataAuthRetry:
             ]
         )
 
-        with patch.object(
-            coordinator, "_refresh_or_relogin", new_callable=MagicMock
-        ) as refresh:
+        with patch.object(coordinator, "_refresh_or_relogin", new_callable=MagicMock) as refresh:
             # Make the patched method awaitable.
             async def _async_refresh():
                 return None
+
             refresh.side_effect = _async_refresh
 
             result = await coordinator._async_update_data()
@@ -282,9 +272,7 @@ class TestAsyncUpdateDataAuthRetry:
         assert result["target_soc"] == {VIN: {"target_soc": 80}}
 
     @pytest.mark.usefixtures("hass")
-    async def test_retry_failure_recorded_no_second_refresh(
-        self, coordinator: PolestarCoordinator
-    ):
+    async def test_retry_failure_recorded_no_second_refresh(self, coordinator: PolestarCoordinator):
         """If retry also fails: layer marked degraded — no second refresh."""
         denied = _rpc_error(grpc.StatusCode.PERMISSION_DENIED)
         # Make every PCCS getter fail so the cycle is full-failure for the
@@ -298,11 +286,11 @@ class TestAsyncUpdateDataAuthRetry:
         ):
             setattr(coordinator.pccs, name, MagicMock(side_effect=denied))
 
-        with patch.object(
-            coordinator, "_refresh_or_relogin", new_callable=MagicMock
-        ) as refresh:
+        with patch.object(coordinator, "_refresh_or_relogin", new_callable=MagicMock) as refresh:
+
             async def _async_refresh():
                 return None
+
             refresh.side_effect = _async_refresh
 
             result = await coordinator._async_update_data()
@@ -319,9 +307,7 @@ class TestAsyncUpdateDataAuthRetry:
         assert "target_soc" in result["api_health"]["pccs"]["failing_endpoints"]
 
     @pytest.mark.usefixtures("hass")
-    async def test_two_layers_share_one_retry(
-        self, coordinator: PolestarCoordinator
-    ):
+    async def test_two_layers_share_one_retry(self, coordinator: PolestarCoordinator):
         """Two layers failing in the same cycle share the single refresh attempt."""
         coordinator.pccs.get_target_soc = MagicMock(
             side_effect=[
@@ -336,11 +322,11 @@ class TestAsyncUpdateDataAuthRetry:
             ]
         )
 
-        with patch.object(
-            coordinator, "_refresh_or_relogin", new_callable=MagicMock
-        ) as refresh:
+        with patch.object(coordinator, "_refresh_or_relogin", new_callable=MagicMock) as refresh:
+
             async def _async_refresh():
                 return None
+
             refresh.side_effect = _async_refresh
 
             await coordinator._async_update_data()

@@ -759,9 +759,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
             except ConfigEntryAuthFailed:
                 raise
             except Exception as retry_err:
-                raise UpdateFailed(
-                    f"API error after gRPC auth retry: {retry_err}"
-                ) from retry_err
+                raise UpdateFailed(f"API error after gRPC auth retry: {retry_err}") from retry_err
         except requests.HTTPError as err:
             if err.response is not None and err.response.status_code == 401:
                 _LOGGER.debug("Access token expired, attempting refresh")
@@ -878,9 +876,7 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 return _FAILED
             except Exception:
                 _LOGGER.debug("Failed %s/%s (non-gRPC)", layer, endpoint, exc_info=True)
-                health.record_failure(
-                    layer, endpoint, _NonGrpcError(f"{layer}/{endpoint}")
-                )
+                health.record_failure(layer, endpoint, _NonGrpcError(f"{layer}/{endpoint}"))
                 return _FAILED
             health.record_success(layer, endpoint)
             return result
@@ -971,15 +967,21 @@ class PolestarCoordinator(DataUpdateCoordinator):
                 LAYER_PCCS, "amp_limit", vin, lambda v=vin: self.pccs.get_amp_limit(v)
             )
             charge_timer_by_vin[vin] = call_or_keep(
-                LAYER_PCCS, "charge_timer", vin,
+                LAYER_PCCS,
+                "charge_timer",
+                vin,
                 lambda v=vin: self.pccs.get_global_charge_timer(v),
             )
             climate_timers_by_vin[vin] = call_or_keep(
-                LAYER_PCCS, "climate_timers", vin,
+                LAYER_PCCS,
+                "climate_timers",
+                vin,
                 lambda v=vin: self.pccs.get_parking_climate_timers(v),
             )
             climate_timer_settings_by_vin[vin] = call_or_keep(
-                LAYER_PCCS, "climate_timer_settings", vin,
+                LAYER_PCCS,
+                "climate_timer_settings",
+                vin,
                 lambda v=vin: self.pccs.get_parking_climate_timer_settings(v),
             )
 
@@ -992,7 +994,9 @@ class PolestarCoordinator(DataUpdateCoordinator):
         health_by_vin: dict = {}
         for vin in vins:
             climate_by_vin[vin] = call_or_keep(
-                LAYER_CEP, "climate", vin,
+                LAYER_CEP,
+                "climate",
+                vin,
                 lambda v=vin: self.cep.get_parking_climatization(v),
             )
             cep_battery_by_vin[vin] = call_or_keep(

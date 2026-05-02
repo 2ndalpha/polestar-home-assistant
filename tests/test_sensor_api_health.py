@@ -68,9 +68,7 @@ class TestSensorConfiguration:
     def test_no_device_association(self):
         """Diagnostic sensor has no device — it appears at integration level."""
         s = _make_sensor(None)
-        assert s._attr_device_info is None or not getattr(
-            s, "_attr_device_info", None
-        )
+        assert s._attr_device_info is None or not getattr(s, "_attr_device_info", None)
 
 
 # ---------------------------------------------------------------------------
@@ -80,35 +78,43 @@ class TestSensorConfiguration:
 
 class TestSensorState:
     def test_all_layers_ok(self):
-        s = _make_sensor({
-            LAYER_PCCS: _layer(),
-            LAYER_CEP: _layer(),
-            LAYER_GRAPHQL: _layer(),
-        })
+        s = _make_sensor(
+            {
+                LAYER_PCCS: _layer(),
+                LAYER_CEP: _layer(),
+                LAYER_GRAPHQL: _layer(),
+            }
+        )
         assert s.native_value == "ok"
 
     def test_one_layer_one_failure_marks_degraded(self):
-        s = _make_sensor({
-            LAYER_PCCS: _layer(consecutive_failures=1, status="degraded"),
-            LAYER_CEP: _layer(),
-            LAYER_GRAPHQL: _layer(),
-        })
+        s = _make_sensor(
+            {
+                LAYER_PCCS: _layer(consecutive_failures=1, status="degraded"),
+                LAYER_CEP: _layer(),
+                LAYER_GRAPHQL: _layer(),
+            }
+        )
         assert s.native_value == "degraded"
 
     def test_two_failures_marks_down(self):
-        s = _make_sensor({
-            LAYER_PCCS: _layer(consecutive_failures=2, status="down"),
-            LAYER_CEP: _layer(),
-            LAYER_GRAPHQL: _layer(),
-        })
+        s = _make_sensor(
+            {
+                LAYER_PCCS: _layer(consecutive_failures=2, status="down"),
+                LAYER_CEP: _layer(),
+                LAYER_GRAPHQL: _layer(),
+            }
+        )
         assert s.native_value == "down"
 
     def test_down_dominates_degraded(self):
-        s = _make_sensor({
-            LAYER_PCCS: _layer(consecutive_failures=1),
-            LAYER_CEP: _layer(consecutive_failures=5),
-            LAYER_GRAPHQL: _layer(),
-        })
+        s = _make_sensor(
+            {
+                LAYER_PCCS: _layer(consecutive_failures=1),
+                LAYER_CEP: _layer(consecutive_failures=5),
+                LAYER_GRAPHQL: _layer(),
+            }
+        )
         assert s.native_value == "down"
 
     def test_no_data_returns_ok(self):
@@ -127,17 +133,19 @@ class TestSensorState:
 
 class TestSensorAttributes:
     def test_attributes_for_each_layer(self):
-        s = _make_sensor({
-            LAYER_PCCS: _layer(
-                status="down",
-                last_code="PERMISSION_DENIED",
-                last_success_at="2026-05-01T12:00:00+00:00",
-                failing_endpoints=["target_soc", "amp_limit"],
-                consecutive_failures=3,
-            ),
-            LAYER_CEP: _layer(),
-            LAYER_GRAPHQL: _layer(),
-        })
+        s = _make_sensor(
+            {
+                LAYER_PCCS: _layer(
+                    status="down",
+                    last_code="PERMISSION_DENIED",
+                    last_success_at="2026-05-01T12:00:00+00:00",
+                    failing_endpoints=["target_soc", "amp_limit"],
+                    consecutive_failures=3,
+                ),
+                LAYER_CEP: _layer(),
+                LAYER_GRAPHQL: _layer(),
+            }
+        )
         attrs = s.extra_state_attributes
         assert attrs["pccs_status"] == "down"
         assert attrs["last_pccs_code"] == "PERMISSION_DENIED"
