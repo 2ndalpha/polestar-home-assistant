@@ -36,8 +36,7 @@ query getCars {
     vin
     internalVehicleIdentifier
     modelYear
-    content { model { code name } }
-    hasPerformancePackage
+    modelName
     registrationNo
     deliveryDate
     currentPlannedDeliveryDate
@@ -45,8 +44,8 @@ query getCars {
 }
 """
 
-QUERY_TELEMATICS = """
-query CarTelematicsV2($vins: [String!]!) {
+QUERY_TELEMATICS_BATTERY = """
+query CarTelematicsV2Battery($vins: [String!]!) {
   carTelematicsV2(vins: $vins) {
     battery {
       vin
@@ -54,6 +53,13 @@ query CarTelematicsV2($vins: [String!]!) {
       chargingStatus
       estimatedChargingTimeToFullMinutes
     }
+  }
+}
+"""
+
+QUERY_TELEMATICS_ODOMETER = """
+query CarTelematicsV2Odometer($vins: [String!]!) {
+  carTelematicsV2(vins: $vins) {
     odometer {
       vin
       odometerMeters

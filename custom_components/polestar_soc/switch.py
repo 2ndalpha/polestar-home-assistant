@@ -63,10 +63,7 @@ class PolestarChargeTimerSwitch(CoordinatorEntity[PolestarCoordinator], SwitchEn
         self._vin = vin
         self._attr_unique_id = f"{vin}_charging_timer"
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 
@@ -138,10 +135,7 @@ class PolestarClimateSwitch(CoordinatorEntity[PolestarCoordinator], SwitchEntity
         self._vin = vin
         self._attr_unique_id = f"{vin}_climate"
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 
@@ -218,10 +212,7 @@ class PolestarClimateTimerSwitch(CoordinatorEntity[PolestarCoordinator], SwitchE
         if display_num >= 3:
             self._attr_entity_registry_enabled_default = False
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 

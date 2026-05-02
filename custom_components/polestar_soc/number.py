@@ -62,10 +62,7 @@ class PolestarChargeLimitNumber(CoordinatorEntity[PolestarCoordinator], NumberEn
         self._vin = vin
         self._attr_unique_id = f"{vin}_charge_limit"
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 
@@ -122,10 +119,7 @@ class PolestarAmpLimitNumber(CoordinatorEntity[PolestarCoordinator], NumberEntit
         self._vin = vin
         self._attr_unique_id = f"{vin}_amp_limit"
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 
@@ -182,10 +176,7 @@ class PolestarClimateTimerTemperatureNumber(CoordinatorEntity[PolestarCoordinato
         self._vin = vin
         self._attr_unique_id = f"{vin}_climate_timer_temperature"
 
-        model_name = "Polestar"
-        content = vehicle.get("content")
-        if content and content.get("model"):
-            model_name = content["model"].get("name", model_name)
+        model_name = vehicle.get("modelName") or "Polestar"
         year = vehicle.get("modelYear", "")
         device_name = f"{model_name} ({year})" if year else model_name
 

@@ -106,6 +106,14 @@
       },
       "estimated_range_miles": {
         "name": "Estimated range (miles)"
+      },
+      "api_health": {
+        "name": "API health",
+        "state": {
+          "ok": "OK",
+          "degraded": "Degraded",
+          "down": "Down"
+        }
       }
     },
     "number": {

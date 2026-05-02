@@ -503,7 +503,7 @@ class CepClient:
             response = method(_build_vin_request(vin), metadata=self._metadata(vin), timeout=30)
             return _parse_climate_response(response)
         except grpc.RpcError as err:
-            _LOGGER.warning("CEP GetLatestParkingClimatization failed: %s", err)
+            _LOGGER.debug("CEP GetLatestParkingClimatization failed: %s", err)
             raise
 
     def get_battery(self, vin: str) -> dict:
@@ -518,7 +518,7 @@ class CepClient:
             response = method(_build_vin_request(vin), metadata=self._metadata(vin), timeout=30)
             return _parse_battery_response(response)
         except grpc.RpcError as err:
-            _LOGGER.warning("CEP GetLatestBattery failed: %s", err)
+            _LOGGER.debug("CEP GetLatestBattery failed: %s", err)
             raise
 
     def get_exterior(self, vin: str) -> dict:
@@ -533,7 +533,7 @@ class CepClient:
             response = method(_build_vin_request(vin), metadata=self._metadata(vin), timeout=30)
             return _parse_exterior_response(response)
         except grpc.RpcError as err:
-            _LOGGER.warning("CEP GetLatestExterior failed: %s", err)
+            _LOGGER.debug("CEP GetLatestExterior failed: %s", err)
             raise
 
     def get_availability(self, vin: str) -> dict:
@@ -548,7 +548,7 @@ class CepClient:
             response = method(_build_vin_request(vin), metadata=self._metadata(vin), timeout=30)
             return _parse_availability_response(response)
         except grpc.RpcError as err:
-            _LOGGER.warning("CEP GetLatestAvailability failed: %s", err)
+            _LOGGER.debug("CEP GetLatestAvailability failed: %s", err)
             raise
 
     def get_health(self, vin: str) -> dict:
@@ -568,7 +568,7 @@ class CepClient:
             for response in responses:
                 return _parse_health_response(response)
         except grpc.RpcError as err:
-            _LOGGER.warning("CEP GetHealth failed: %s", err)
+            _LOGGER.debug("CEP GetHealth failed: %s", err)
             raise
         # Stream yielded no responses
         return _parse_health_response(b"")
@@ -587,7 +587,7 @@ class CepClient:
             )
             return _parse_location_response(response)
         except grpc.RpcError as err:
-            _LOGGER.warning("CEP GetLastKnownLocation failed: %s", err)
+            _LOGGER.debug("CEP GetLastKnownLocation failed: %s", err)
             raise
 
     # -- Window Control (InvocationService) ---------------------------------
@@ -630,7 +630,7 @@ class CepClient:
                     method_path,
                 )
                 return result
-            _LOGGER.warning("CEP %s failed: %s", method_path, err)
+            _LOGGER.debug("CEP %s failed: %s", method_path, err)
             raise
 
         status = result.get("status", 0)

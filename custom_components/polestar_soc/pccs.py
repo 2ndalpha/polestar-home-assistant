@@ -710,7 +710,7 @@ class PccsClient:
                 return _parse_amp_limit_response(response)
             return _parse_amp_limit_response(b"")
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS GetAmpLimit failed: %s", err)
+            _LOGGER.debug("PCCS GetAmpLimit failed: %s", err)
             raise
 
     def set_amp_limit(self, vin: str, amp_limit: int) -> dict:
@@ -735,7 +735,7 @@ class PccsClient:
                 if result.get("status", 0) not in _CHRONOS_INTERMEDIATE_STATUSES:
                     break
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS SetAmpLimit failed: %s", err)
+            _LOGGER.debug("PCCS SetAmpLimit failed: %s", err)
             raise
 
         status = result.get("status", 0)
@@ -769,7 +769,7 @@ class PccsClient:
                 return _parse_target_soc_response(response)
             return _parse_target_soc_response(b"")
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS GetTargetSoc failed: %s", err)
+            _LOGGER.debug("PCCS GetTargetSoc failed: %s", err)
             raise
 
     def set_target_soc(self, vin: str, percentage: int) -> dict:
@@ -791,7 +791,7 @@ class PccsClient:
                 return _parse_target_soc_response(response)
             return _parse_target_soc_response(b"")
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS SetTargetSoc failed: %s", err)
+            _LOGGER.debug("PCCS SetTargetSoc failed: %s", err)
             raise
 
     # -- Global Charge Timer -------------------------------------------------
@@ -816,7 +816,7 @@ class PccsClient:
             # Empty stream
             return _parse_charge_timer_response(b"")
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS GetGlobalChargeTimer failed: %s", err)
+            _LOGGER.debug("PCCS GetGlobalChargeTimer failed: %s", err)
             raise
 
     def set_global_charge_timer(
@@ -852,7 +852,7 @@ class PccsClient:
             else:
                 result = _parse_set_charge_timer_response(b"")
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS SetGlobalChargeTimer failed: %s", err)
+            _LOGGER.debug("PCCS SetGlobalChargeTimer failed: %s", err)
             raise
 
         status = result.get("status", 0)
@@ -889,7 +889,7 @@ class PccsClient:
                 return _parse_climate_timers_response(response)
             return []
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS GetTimers (climate) failed: %s", err)
+            _LOGGER.debug("PCCS GetTimers (climate) failed: %s", err)
             raise
 
     def set_parking_climate_timers(self, vin: str, timers: list[dict]) -> dict:
@@ -913,7 +913,7 @@ class PccsClient:
             else:
                 result = _parse_set_climate_timers_response(b"")
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS SetTimers (climate) failed: %s", err)
+            _LOGGER.debug("PCCS SetTimers (climate) failed: %s", err)
             raise
 
         status = result.get("status", 0)
@@ -945,7 +945,7 @@ class PccsClient:
                 return _parse_climate_timer_settings_response(response)
             return _parse_climate_timer_settings_response(b"")
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS GetTimerSettings (climate) failed: %s", err)
+            _LOGGER.debug("PCCS GetTimerSettings (climate) failed: %s", err)
             raise
 
     def set_parking_climate_timer_settings(self, vin: str, temperature: float) -> dict:
@@ -966,7 +966,7 @@ class PccsClient:
             # SetTimerSettingsResponse has the same wire layout as SetTimersResponse
             result = _parse_set_climate_timers_response(response)
         except grpc.RpcError as err:
-            _LOGGER.warning("PCCS SetTimerSettings (climate) failed: %s", err)
+            _LOGGER.debug("PCCS SetTimerSettings (climate) failed: %s", err)
             raise
 
         status = result.get("status", 0)
@@ -1031,7 +1031,7 @@ class PccsClient:
                     method_path,
                 )
                 return result
-            _LOGGER.warning("PCCS %s failed: %s", method_path, err)
+            _LOGGER.debug("PCCS %s failed: %s", method_path, err)
             raise
 
         status = result.get("status", 0)

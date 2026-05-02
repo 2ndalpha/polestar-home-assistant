@@ -69,6 +69,35 @@ The integration authenticates using Polestar ID OAuth2. A second authentication 
 
 Data is polled every 5 minutes.
 
+## Troubleshooting
+
+### API health diagnostic sensor
+
+The integration exposes a diagnostic entity called **API health** (under
+the integration's diagnostic entities, not the default dashboard) that
+reports the rolling state of each upstream API layer:
+
+| State | Meaning | What to do |
+|-------|---------|------------|
+| `ok` | All API layers responded successfully on the last poll. | Nothing. |
+| `degraded` | One layer failed on the last poll cycle. | Wait one cycle (5 min). Could be a transient blip. |
+| `down` | A layer has failed at least two consecutive cycles. | Check the entity's attributes for `last_*_code` and `*_failing_endpoints`. |
+
+The sensor's attributes break down per layer (`pccs`, `cep`, `graphql`):
+
+- `<layer>_status` — same three-state value, scoped to one layer.
+- `last_<layer>_code` — the most recent gRPC status code (e.g.
+  `PERMISSION_DENIED`, `UNAVAILABLE`) or exception type.
+- `last_<layer>_success_at` — UTC timestamp of the last successful call,
+  useful for telling fresh from stale data.
+- `<layer>_failing_endpoints` — the specific endpoints that failed.
+- `<layer>_consecutive_failures` — cycle count since the last success.
+
+When data fetch fails for a layer, the integration **preserves the last
+known value per VIN** so sensors don't flip to `unavailable` on every
+blip. Check the API health attributes if you need to know whether a
+sensor's value is fresh or stale.
+
 ## Development
 
 ```bash
