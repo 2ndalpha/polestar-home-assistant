@@ -13,7 +13,6 @@ VIN = "YSMYKEAE1RB000001"
 _BATTERY_DATA = {
     "vin": VIN,
     "batteryChargeLevelPercentage": 72,
-    "chargingStatus": "CHARGING_STATUS_CHARGING",
     "estimatedChargingTimeToFullMinutes": 95,
 }
 _ODOMETER_DATA = {"vin": VIN, "odometerMeters": 12345678}
@@ -50,7 +49,7 @@ class TestGetTelematicsHappyPath:
         data, failing = api.get_telematics([VIN])
 
         assert data == {"battery": [_BATTERY_DATA], "odometer": [_ODOMETER_DATA]}
-        assert failing == []
+        assert failing == {}
 
 
 class TestGetTelematicsPartialFailure:
@@ -66,7 +65,8 @@ class TestGetTelematicsPartialFailure:
 
         assert data["battery"] == []
         assert data["odometer"] == [_ODOMETER_DATA]
-        assert failing == ["carTelematicsV2.battery"]
+        assert list(failing) == ["carTelematicsV2.battery"]
+        assert "battery field removed" in str(failing["carTelematicsV2.battery"])
 
     def test_odometer_fails_battery_succeeds(self):
         api = _api_with_token()
@@ -80,7 +80,8 @@ class TestGetTelematicsPartialFailure:
 
         assert data["battery"] == [_BATTERY_DATA]
         assert data["odometer"] == []
-        assert failing == ["carTelematicsV2.odometer"]
+        assert list(failing) == ["carTelematicsV2.odometer"]
+        assert "odometer schema bad" in str(failing["carTelematicsV2.odometer"])
 
 
 class TestGetTelematicsBothFail:
@@ -129,4 +130,4 @@ class TestGetTelematicsEmptyResponses:
 
         data, failing = api.get_telematics([VIN])
         assert data == {"battery": [], "odometer": []}
-        assert failing == []
+        assert failing == {}

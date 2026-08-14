@@ -21,7 +21,6 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .cep import CepClient
 from .const import (
     API_URL,
-    CHARGING_STATUS_MAP,
     CLIENT_ID,
     DOMAIN,
     OIDC_AUTH_URL,
@@ -88,6 +87,15 @@ class _LayerHealth:
         successful call, or ``None``.
       * ``failing_endpoints`` — set of endpoint names that failed during
         the most recent cycle.  Cleared at the start of each cycle.
+      * ``schema_endpoints`` — endpoints whose most recent failure was a
+        GraphQL schema/validation error.  **Not** cleared per cycle: such a
+        break never self-heals, so the entry survives until that endpoint
+        succeeds again.  While it is non-empty the layer reports at least
+        ``degraded``, even though ``consecutive_failures`` may read 0 — the
+        counter is per-cycle and a partial-success cycle resets it, which is
+        exactly how a permanently broken sub-query used to keep reporting
+        ``ok`` (issue #22).  The flag is in-memory only, so a Home Assistant
+        restart clears it until the next failing poll.
 
     Warning policy: the first failure with a given ``(layer, code)`` tuple
     logs at ``WARNING``; identical repeats log at ``DEBUG``.  The
@@ -106,6 +114,7 @@ class _LayerHealth:
                 "last_code": None,
                 "last_success_at": None,
                 "failing_endpoints": set(),
+                "_schema_endpoints": set(),
                 "_warned_codes": set(),
                 "_had_success_this_cycle": False,
                 "_had_failure_this_cycle": False,
@@ -150,6 +159,7 @@ class _LayerHealth:
         state["_had_success_this_cycle"] = True
         state["last_success_at"] = datetime.datetime.now(datetime.UTC).isoformat()
         state["failing_endpoints"].discard(endpoint)
+        state["_schema_endpoints"].discard(endpoint)
 
     def record_failure(self, layer: str, endpoint: str, err: BaseException) -> str:
         """Record a failed call.  Warns once per ``(layer, code)`` tuple.
@@ -163,6 +173,8 @@ class _LayerHealth:
 
         code = _classify_error(err)
         state["last_code"] = code
+        if code == _SCHEMA_ERROR:
+            state["_schema_endpoints"].add(endpoint)
 
         msg = "%s call %s failed: %s (%s)"
         if code in state["_warned_codes"]:
@@ -179,9 +191,10 @@ class _LayerHealth:
         for layer in _ALL_LAYERS:
             state = self._state[layer]
             failures = state["consecutive_failures"]
+            schema_endpoints = sorted(state["_schema_endpoints"])
             if failures >= 2:
                 status = "down"
-            elif failures == 1:
+            elif failures == 1 or schema_endpoints:
                 status = "degraded"
             else:
                 status = "ok"
@@ -190,6 +203,10 @@ class _LayerHealth:
                 "last_code": state["last_code"],
                 "last_success_at": state["last_success_at"],
                 "failing_endpoints": sorted(state["failing_endpoints"]),
+                # Reported separately from failing_endpoints, which start_cycle
+                # wipes — without this nothing would name the culprit on a later
+                # cycle where the layer is still sticky-degraded.
+                "schema_endpoints": schema_endpoints,
                 "consecutive_failures": failures,
             }
         return result
@@ -197,6 +214,12 @@ class _LayerHealth:
 
 class _NonGrpcError(Exception):
     """Marker for failures that are not gRPC errors (used by ``_classify_error``)."""
+
+
+# Code assigned to GraphQL schema/query validation failures.  Unlike an outage
+# these never self-heal, so _LayerHealth keeps the endpoint flagged until it
+# succeeds again.
+_SCHEMA_ERROR = "SCHEMA_ERROR"
 
 
 def _classify_error(err: BaseException) -> str:
@@ -209,6 +232,13 @@ def _classify_error(err: BaseException) -> str:
         if code is None:
             return "RPC_ERROR"
         return code.name
+    if isinstance(err, UpdateFailed) and "validation error" in str(err).lower():
+        # graphql-java prefixes every schema/query validation failure this way
+        # (FieldUndefined, UnknownType, SubselectionRequired, …).  They are
+        # permanent rather than transient, so they earn a code of their own:
+        # it keys the warn-once dedup, drives last_graphql_code, and marks the
+        # endpoint schema-broken in _LayerHealth.
+        return _SCHEMA_ERROR
     return type(err).__name__
 
 
@@ -634,17 +664,19 @@ class PolestarAPI:
         data = self._graphql(QUERY_GET_CARS)
         return data.get("getConsumerCarsV2", [])
 
-    def get_telematics(self, vins: list[str]) -> tuple[dict, list[str]]:
+    def get_telematics(self, vins: list[str]) -> tuple[dict, dict[str, UpdateFailed]]:
         """Fetch telematics data for given VINs.
 
         Issues the battery and odometer queries independently so a
         schema-validation failure on one (e.g. Polestar removing the
         ``battery`` field per evcc #27726) does not take the other down.
 
-        Returns ``(data, failing_endpoints)`` where ``data`` matches the
-        legacy shape ``{"battery": [...], "odometer": [...]}`` and
-        ``failing_endpoints`` lists names like ``"carTelematicsV2.battery"``
-        for sub-queries that raised ``UpdateFailed``.
+        Returns ``(data, failures)`` where ``data`` matches the legacy shape
+        ``{"battery": [...], "odometer": [...]}`` and ``failures`` maps an
+        endpoint name like ``"carTelematicsV2.battery"`` to the ``UpdateFailed``
+        it raised.  Callers must record that exception rather than the endpoint
+        name: it carries the GraphQL ``errors[].message`` text, which is the
+        only thing that identifies a schema change as the cause (issue #22).
 
         If both sub-queries fail, ``UpdateFailed`` is re-raised so the
         coordinator surfaces the outage. HTTP 401s are not caught here —
@@ -652,28 +684,29 @@ class PolestarAPI:
         in ``_async_update_data`` still triggers.
         """
         result: dict = {"battery": [], "odometer": []}
-        failing: list[str] = []
-        battery_err: Exception | None = None
-        odometer_err: Exception | None = None
+        failing: dict[str, UpdateFailed] = {}
 
         try:
             data = self._graphql(QUERY_TELEMATICS_BATTERY, {"vins": vins})
             result["battery"] = data.get("carTelematicsV2", {}).get("battery", []) or []
         except UpdateFailed as err:
-            battery_err = err
-            failing.append("carTelematicsV2.battery")
+            failing["carTelematicsV2.battery"] = err
 
         try:
             data = self._graphql(QUERY_TELEMATICS_ODOMETER, {"vins": vins})
             result["odometer"] = data.get("carTelematicsV2", {}).get("odometer", []) or []
         except UpdateFailed as err:
-            odometer_err = err
-            failing.append("carTelematicsV2.odometer")
+            failing["carTelematicsV2.odometer"] = err
 
-        if battery_err and odometer_err:
-            raise UpdateFailed(
-                f"GraphQL telematics: battery={battery_err}; odometer={odometer_err}"
+        # One key per sub-query issued, so both this check and the message below
+        # stay correct if a third is ever added — provided its key is seeded in
+        # the literal above rather than only assigned inside its ``try``, which
+        # would leave it missing on failure and stop this guard firing.
+        if len(failing) == len(result):
+            detail = "; ".join(
+                f"{endpoint.rsplit('.', 1)[-1]}={err}" for endpoint, err in failing.items()
             )
+            raise UpdateFailed(f"GraphQL telematics: {detail}")
 
         return result, failing
 
@@ -929,15 +962,18 @@ class PolestarCoordinator(DataUpdateCoordinator):
             telematics, graphql_failing = self.api.get_telematics(vins)
         except UpdateFailed as err:
             # Both sub-queries failed — record both endpoints, then re-raise.
+            # The combined message names both, so if only one was a validation
+            # error the other is also flagged schema-broken here.  Left as-is:
+            # it self-corrects on that endpoint's next success.
             for endpoint in ("carTelematicsV2.battery", "carTelematicsV2.odometer"):
                 health.record_failure(LAYER_GRAPHQL, endpoint, err)
             health.end_cycle()
             raise
-        # Mark whichever sub-queries succeeded vs failed.  Partial success
-        # keeps the layer "ok" but listed endpoints stay in failing_endpoints.
-        for endpoint in graphql_failing:
-            # Use a synthetic GraphQL error type for layer-tracking purposes.
-            health.record_failure(LAYER_GRAPHQL, endpoint, _NonGrpcError(endpoint))
+        # Mark whichever sub-queries succeeded vs failed.  Record the real
+        # UpdateFailed, not a synthetic marker: its message carries the GraphQL
+        # errors[].message text that identifies a schema change (issue #22).
+        for endpoint, err in graphql_failing.items():
+            health.record_failure(LAYER_GRAPHQL, endpoint, err)
         if "carTelematicsV2.battery" not in graphql_failing:
             health.record_success(LAYER_GRAPHQL, "carTelematicsV2.battery")
         if "carTelematicsV2.odometer" not in graphql_failing:
@@ -952,6 +988,23 @@ class PolestarCoordinator(DataUpdateCoordinator):
         for o in telematics.get("odometer", []) or []:
             if o:
                 odometer_by_vin[o["vin"]] = o
+
+        # A failed sub-query yields no rows at all, which blanks every entity it
+        # backs on the very first bad poll.  Fall back to the previous cycle, as
+        # call_or_keep already does for the PCCS/CEP reads.  Gated on failure: a
+        # *successful* query returning [] is real data, not an outage.
+        #
+        # call_or_keep itself cannot be reused here — it looks up
+        # previous[endpoint], which only works because the PCCS/CEP endpoint
+        # names double as data keys.  These do not ("battery" vs
+        # "carTelematicsV2.battery"), and it is per-VIN over a callable besides.
+        #
+        # A VIN that has left the account keeps its stale entry until the
+        # sub-query recovers — harmless, and cheaper than tracking removals.
+        if "carTelematicsV2.battery" in graphql_failing:
+            battery_by_vin = {**previous.get("battery", {}), **battery_by_vin}
+        if "carTelematicsV2.odometer" in graphql_failing:
+            odometer_by_vin = {**previous.get("odometer", {}), **odometer_by_vin}
 
         # ---- PCCS: per-VIN reads ----
         target_soc_by_vin: dict = {}
@@ -1056,13 +1109,3 @@ class PolestarCoordinator(DataUpdateCoordinator):
         """Close gRPC channels."""
         self.pccs.close()
         self.cep.close()
-
-    @staticmethod
-    def format_charging_status(status: str | None) -> str:
-        """Convert API charging status to human-readable string."""
-        if not status:
-            return "Unknown"
-        return CHARGING_STATUS_MAP.get(
-            status,
-            status.replace("CHARGING_STATUS_", "").replace("_", " ").title(),
-        )

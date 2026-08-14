@@ -56,7 +56,6 @@ def sample_battery():
     return {
         "vin": "YSMYKEAE1RB000001",
         "batteryChargeLevelPercentage": 72,
-        "chargingStatus": "CHARGING_STATUS_CHARGING",
         "estimatedChargingTimeToFullMinutes": 95,
     }
 

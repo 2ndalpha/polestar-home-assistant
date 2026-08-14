@@ -50,7 +50,6 @@ query CarTelematicsV2Battery($vins: [String!]!) {
     battery {
       vin
       batteryChargeLevelPercentage
-      chargingStatus
       estimatedChargingTimeToFullMinutes
     }
   }
@@ -67,15 +66,6 @@ query CarTelematicsV2Odometer($vins: [String!]!) {
   }
 }
 """
-
-CHARGING_STATUS_MAP = {
-    "CHARGING_STATUS_CHARGING": "Charging",
-    "CHARGING_STATUS_IDLE": "Idle",
-    "CHARGING_STATUS_DONE": "Fully charged",
-    "CHARGING_STATUS_FAULT": "Fault",
-    "CHARGING_STATUS_UNSPECIFIED": "Unknown",
-    "CHARGING_STATUS_SCHEDULED": "Scheduled",
-}
 
 # Climate running status enum (field 2 of ParkingClimatizationState)
 CLIMATE_RUNNING_STATUS_MAP: dict[int, str] = {
@@ -206,6 +196,15 @@ CHARGER_CONNECTION_STATUS_MAP: dict[int, str] = {
     1: "Connected",
     2: "Disconnected",
     3: "Fault",
+}
+
+# Charging status enum (field 7 of BatteryState).  Beware: 1 means *charging*
+# here but "Not charging" in CHARGING_TYPE_MAP three lines below — two int-keyed
+# enums with opposite senses for the same key.
+CHARGING_STATUS_MAP: dict[int, str] = {
+    1: "Charging",
+    2: "Idle",
+    3: "Scheduled",
 }
 
 CHARGING_TYPE_MAP: dict[int, str] = {
