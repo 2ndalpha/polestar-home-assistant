@@ -21,6 +21,7 @@ def _layer(
     last_code: str | None = None,
     last_success_at: str | None = None,
     failing_endpoints: list[str] | None = None,
+    schema_endpoints: list[str] | None = None,
     consecutive_failures: int = 0,
 ) -> dict:
     return {
@@ -28,6 +29,7 @@ def _layer(
         "last_code": last_code,
         "last_success_at": last_success_at,
         "failing_endpoints": failing_endpoints or [],
+        "schema_endpoints": schema_endpoints or [],
         "consecutive_failures": consecutive_failures,
     }
 
@@ -87,7 +89,7 @@ class TestSensorState:
         )
         assert s.native_value == "ok"
 
-    def test_one_layer_one_failure_marks_degraded(self):
+    def test_one_degraded_layer_marks_degraded(self):
         s = _make_sensor(
             {
                 LAYER_PCCS: _layer(consecutive_failures=1, status="degraded"),
@@ -97,7 +99,7 @@ class TestSensorState:
         )
         assert s.native_value == "degraded"
 
-    def test_two_failures_marks_down(self):
+    def test_one_down_layer_marks_down(self):
         s = _make_sensor(
             {
                 LAYER_PCCS: _layer(consecutive_failures=2, status="down"),
@@ -110,12 +112,42 @@ class TestSensorState:
     def test_down_dominates_degraded(self):
         s = _make_sensor(
             {
-                LAYER_PCCS: _layer(consecutive_failures=1),
-                LAYER_CEP: _layer(consecutive_failures=5),
+                LAYER_PCCS: _layer(consecutive_failures=1, status="degraded"),
+                LAYER_CEP: _layer(consecutive_failures=5, status="down"),
                 LAYER_GRAPHQL: _layer(),
             }
         )
         assert s.native_value == "down"
+
+    def test_status_drives_state_not_the_failure_counter(self):
+        """A sticky schema break reports degraded with a counter of 0.
+
+        The counter is per-cycle and a partial-success cycle resets it, so
+        deriving state from it here would have re-hidden issue #22.
+        """
+        s = _make_sensor(
+            {
+                LAYER_PCCS: _layer(),
+                LAYER_CEP: _layer(),
+                LAYER_GRAPHQL: _layer(
+                    consecutive_failures=0,
+                    status="degraded",
+                    schema_endpoints=["carTelematicsV2.battery"],
+                ),
+            }
+        )
+        assert s.native_value == "degraded"
+
+    def test_unrecognised_status_is_ignored(self):
+        """A future status string must not raise out of the ranking."""
+        s = _make_sensor(
+            {
+                LAYER_PCCS: _layer(status="catastrophic"),
+                LAYER_CEP: _layer(),
+                LAYER_GRAPHQL: _layer(),
+            }
+        )
+        assert s.native_value == "ok"
 
     def test_no_data_returns_ok(self):
         s = _make_sensor(None)
@@ -143,7 +175,11 @@ class TestSensorAttributes:
                     consecutive_failures=3,
                 ),
                 LAYER_CEP: _layer(),
-                LAYER_GRAPHQL: _layer(),
+                LAYER_GRAPHQL: _layer(
+                    status="degraded",
+                    last_code="SCHEMA_ERROR",
+                    schema_endpoints=["carTelematicsV2.battery"],
+                ),
             }
         )
         attrs = s.extra_state_attributes
@@ -152,11 +188,16 @@ class TestSensorAttributes:
         assert attrs["last_pccs_success_at"] == "2026-05-01T12:00:00+00:00"
         assert attrs["pccs_failing_endpoints"] == ["target_soc", "amp_limit"]
         assert attrs["pccs_consecutive_failures"] == 3
+        # The schema-broken endpoint is named for drill-down.
+        assert attrs["graphql_schema_endpoints"] == ["carTelematicsV2.battery"]
+        assert attrs["last_graphql_code"] == "SCHEMA_ERROR"
+        assert attrs["pccs_schema_endpoints"] == []
         # All three layers' fields are present.
         for layer in ("pccs", "cep", "graphql"):
             for suffix in (
                 "_status",
                 "_failing_endpoints",
+                "_schema_endpoints",
                 "_consecutive_failures",
             ):
                 assert f"{layer}{suffix}" in attrs

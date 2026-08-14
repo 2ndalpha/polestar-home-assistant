@@ -43,21 +43,40 @@ class TestBatterySoc:
 
 
 class TestChargingStatus:
+    """``charging_status`` is sourced from CEP field 7 since issue #22."""
+
     def test_known_status(self, sample_coordinator_data):
-        assert _charging_status(sample_coordinator_data, VIN) == "Charging"
+        # sample_cep_battery carries charging_status: 2 (IDLE).
+        assert _charging_status(sample_coordinator_data, VIN) == "Idle"
 
-    def test_none_battery_returns_unknown(self):
-        data = {"battery": {}}
-        assert _charging_status(data, VIN) == "Unknown"
+    def test_charging(self):
+        data = {"cep_battery": {VIN: {"charging_status": 1}}}
+        assert _charging_status(data, VIN) == "Charging"
 
-    def test_idle(self):
-        data = {"battery": {VIN: {"chargingStatus": "CHARGING_STATUS_IDLE"}}}
-        assert _charging_status(data, VIN) == "Idle"
+    def test_scheduled(self):
+        data = {"cep_battery": {VIN: {"charging_status": 3}}}
+        assert _charging_status(data, VIN) == "Scheduled"
 
-    def test_missing_status_key(self):
-        data = {"battery": {VIN: {"vin": "X"}}}
-        result = _charging_status(data, VIN)
-        assert result == "Unknown"
+    def test_none_value_with_key_present_returns_none(self):
+        """The production no-data case — CEP always emits the key, sometimes as None.
+
+        Without a guard ahead of the map lookup this renders "Unknown (None)".
+        """
+        data = {"cep_battery": {VIN: {"charging_status": None}}}
+        assert _charging_status(data, VIN) is None
+
+    def test_missing_vin_returns_none(self):
+        data = {"cep_battery": {}}
+        assert _charging_status(data, VIN) is None
+
+    def test_missing_status_key_returns_none(self):
+        data = {"cep_battery": {VIN: {"soc": 50.0}}}
+        assert _charging_status(data, VIN) is None
+
+    def test_unmapped_enum_value_is_surfaced(self):
+        """An undiscovered CEP enum member must be visible, not silently dropped."""
+        data = {"cep_battery": {VIN: {"charging_status": 7}}}
+        assert _charging_status(data, VIN) == "Unknown (7)"
 
 
 class TestChargingTimeRemaining:

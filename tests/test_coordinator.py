@@ -10,6 +10,7 @@ import grpc
 import pytest
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.polestar_soc.coordinator import (
     LAYER_PCCS,
@@ -21,6 +22,12 @@ from custom_components.polestar_soc.coordinator import (
 from .conftest import make_rpc_error as _rpc_error
 
 VIN = "YSMYKEAE1RB000001"
+
+# The exact GraphQL validation error Polestar returned in issue #22.
+_FIELD_UNDEFINED = (
+    "GraphQL errors: Validation error of type FieldUndefined: Field 'chargingStatus' "
+    "in type 'BatteryV2' is undefined @ 'carTelematicsV2/battery/chargingStatus'"
+)
 
 
 @pytest.fixture
@@ -45,7 +52,7 @@ def coordinator(hass: HomeAssistant, mock_entry: MagicMock) -> PolestarCoordinat
     coord = PolestarCoordinator(hass, mock_entry)
     coord.api = MagicMock()
     coord.api.get_vehicles = MagicMock(return_value=[{"vin": VIN}])
-    coord.api.get_telematics = MagicMock(return_value=({"battery": [], "odometer": []}, []))
+    coord.api.get_telematics = MagicMock(return_value=({"battery": [], "odometer": []}, {}))
     coord.pccs = MagicMock()
     coord.cep = MagicMock()
     coord.pccs.get_target_soc = MagicMock(return_value={"target_soc": 80})
@@ -86,31 +93,6 @@ class TestB64UrlEncode:
     def test_empty_input(self):
         result = _b64urlencode(b"")
         assert result == ""
-
-
-class TestFormatChargingStatus:
-    def test_known_statuses(self):
-        assert PolestarCoordinator.format_charging_status("CHARGING_STATUS_CHARGING") == "Charging"
-        assert PolestarCoordinator.format_charging_status("CHARGING_STATUS_IDLE") == "Idle"
-        assert PolestarCoordinator.format_charging_status("CHARGING_STATUS_DONE") == "Fully charged"
-        assert PolestarCoordinator.format_charging_status("CHARGING_STATUS_FAULT") == "Fault"
-        assert (
-            PolestarCoordinator.format_charging_status("CHARGING_STATUS_UNSPECIFIED") == "Unknown"
-        )
-        assert (
-            PolestarCoordinator.format_charging_status("CHARGING_STATUS_SCHEDULED") == "Scheduled"
-        )
-
-    def test_none_returns_unknown(self):
-        assert PolestarCoordinator.format_charging_status(None) == "Unknown"
-
-    def test_empty_string_returns_unknown(self):
-        assert PolestarCoordinator.format_charging_status("") == "Unknown"
-
-    def test_unknown_status_formatted(self):
-        # Unknown statuses should be formatted by stripping prefix and title-casing
-        result = PolestarCoordinator.format_charging_status("CHARGING_STATUS_NEW_VALUE")
-        assert result == "New Value"
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +202,75 @@ class TestDoFetchLastKnownGood:
         assert result["target_soc"] == {}
 
 
+class TestDoFetchTelematicsLastKnownGood:
+    """The GraphQL dicts were the only coordinator data without a fallback.
+
+    That is why a single bad poll blanked battery_soc rather than holding the
+    last value, as the PCCS/CEP reads do via call_or_keep.
+    """
+
+    def test_failed_battery_subquery_keeps_previous_values(self, coordinator: PolestarCoordinator):
+        coordinator.data = {
+            "battery": {VIN: {"vin": VIN, "batteryChargeLevelPercentage": 72}},
+            "odometer": {VIN: {"vin": VIN, "odometerMeters": 1000}},
+        }
+        coordinator.api.get_telematics = MagicMock(
+            return_value=(
+                {"battery": [], "odometer": [{"vin": VIN, "odometerMeters": 2000}]},
+                {"carTelematicsV2.battery": UpdateFailed(_FIELD_UNDEFINED)},
+            )
+        )
+        result = coordinator._do_fetch(auth_retry_used=True)
+
+        assert result["battery"][VIN]["batteryChargeLevelPercentage"] == 72
+        # The surviving sub-query still reports fresh data, not the stale value.
+        assert result["odometer"][VIN]["odometerMeters"] == 2000
+
+    def test_fresh_rows_win_over_previous(self, coordinator: PolestarCoordinator):
+        """Anything the failing cycle did return must not be overwritten."""
+        other_vin = "YSMYKEAE1RB000002"
+        coordinator.data = {"battery": {VIN: {"batteryChargeLevelPercentage": 72}}}
+        coordinator.api.get_vehicles = MagicMock(return_value=[{"vin": VIN}, {"vin": other_vin}])
+        coordinator.api.get_telematics = MagicMock(
+            return_value=(
+                {
+                    "battery": [{"vin": VIN, "batteryChargeLevelPercentage": 55}],
+                    "odometer": [],
+                },
+                {"carTelematicsV2.battery": UpdateFailed(_FIELD_UNDEFINED)},
+            )
+        )
+        result = coordinator._do_fetch(auth_retry_used=True)
+
+        assert result["battery"][VIN]["batteryChargeLevelPercentage"] == 55
+        # The fallback must not invent rows for VINs the failing query never returned.
+        assert other_vin not in result["battery"]
+
+    def test_no_previous_data_means_unavailable(self, coordinator: PolestarCoordinator):
+        coordinator.data = None
+        coordinator.api.get_telematics = MagicMock(
+            return_value=(
+                {"battery": [], "odometer": []},
+                {"carTelematicsV2.battery": UpdateFailed(_FIELD_UNDEFINED)},
+            )
+        )
+        result = coordinator._do_fetch(auth_retry_used=True)
+
+        assert result["battery"] == {}
+
+    def test_successful_empty_response_does_not_resurrect_previous(
+        self, coordinator: PolestarCoordinator
+    ):
+        """An empty result from a *working* query is real data, not an outage."""
+        coordinator.data = {"battery": {VIN: {"batteryChargeLevelPercentage": 72}}}
+        coordinator.api.get_telematics = MagicMock(
+            return_value=({"battery": [], "odometer": []}, {})
+        )
+        result = coordinator._do_fetch(auth_retry_used=True)
+
+        assert result["battery"] == {}
+
+
 class TestDoFetchWarnOnce:
     def test_repeat_failures_warn_once(
         self, coordinator: PolestarCoordinator, caplog: pytest.LogCaptureFixture
@@ -236,6 +287,50 @@ class TestDoFetchWarnOnce:
             if r.levelno == logging.WARNING and "UNAVAILABLE" in r.getMessage()
         ]
         assert len(warnings) == 1
+
+
+class TestDoFetchGraphqlPartialFailureLogging:
+    """Issue #22: a partial telematics failure logged only the endpoint name.
+
+    The GraphQL ``errors[].message`` was built in ``_graphql`` and then dropped,
+    so the operator saw ``_NonGrpcError (carTelematicsV2.battery)`` and had no way
+    to tell a schema change from an outage.
+    """
+
+    def test_warning_carries_the_graphql_error_message(
+        self, coordinator: PolestarCoordinator, caplog: pytest.LogCaptureFixture
+    ):
+        coordinator.api.get_telematics = MagicMock(
+            return_value=(
+                {"battery": [], "odometer": [{"vin": VIN, "odometerMeters": 1}]},
+                {"carTelematicsV2.battery": UpdateFailed(_FIELD_UNDEFINED)},
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="custom_components.polestar_soc.coordinator"):
+            coordinator._do_fetch(auth_retry_used=True)
+
+        graphql_warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "carTelematicsV2.battery" in r.getMessage()
+        ]
+        assert len(graphql_warnings) == 1
+        assert "FieldUndefined" in graphql_warnings[0]
+        assert "chargingStatus" in graphql_warnings[0]
+        assert "_NonGrpcError" not in graphql_warnings[0]
+
+    def test_succeeding_subquery_still_reports_its_data(self, coordinator: PolestarCoordinator):
+        """The split exists so one broken sub-query cannot take the other down."""
+        coordinator.api.get_telematics = MagicMock(
+            return_value=(
+                {"battery": [], "odometer": [{"vin": VIN, "odometerMeters": 12345678}]},
+                {"carTelematicsV2.battery": UpdateFailed(_FIELD_UNDEFINED)},
+            )
+        )
+        result = coordinator._do_fetch(auth_retry_used=True)
+
+        assert result["odometer"][VIN]["odometerMeters"] == 12345678
+        assert result["api_health"]["graphql"]["failing_endpoints"] == ["carTelematicsV2.battery"]
 
 
 # ---------------------------------------------------------------------------

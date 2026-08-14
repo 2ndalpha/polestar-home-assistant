@@ -9,7 +9,7 @@ Custom Home Assistant integration for Polestar vehicles. Provides battery, charg
 | Sensor | Unit | Description |
 |--------|------|-------------|
 | Battery SOC | % | Battery state of charge |
-| Charging Status | — | Charging / Idle / Fully charged / Scheduled / Fault |
+| Charging Status | — | Charging / Idle / Scheduled |
 | Charging Time Remaining | min | Estimated time to full charge |
 | Estimated Range | km | Estimated remaining range |
 | Odometer | km | Total distance driven |
@@ -19,6 +19,18 @@ Custom Home Assistant integration for Polestar vehicles. Provides battery, charg
 | Rear Left Seat Heating | — | Off / Low / Medium / High |
 | Rear Right Seat Heating | — | Off / Low / Medium / High |
 | Steering Wheel Heating | — | Off / Low / Medium / High |
+
+> **Charging Status changed.** Polestar removed the `chargingStatus` field from
+> their GraphQL API, so this sensor is now read from the Volvo CEP API instead.
+> Two consequences for existing dashboards and automations:
+>
+> - **`Fully charged` and `Fault` are no longer reported.** The CEP enum has no
+>   known equivalent for them. Any value it reports that we don't yet recognise
+>   shows up as `Unknown (n)` rather than being dropped — please open an issue if
+>   you see one, since that is how the missing states would be identified.
+> - **The sensor now reports `unknown` when no value is available**, where it
+>   previously reported the literal string `Unknown`. Automations comparing
+>   against `"Unknown"` should compare against `"unknown"` instead.
 
 ### Device Tracker
 

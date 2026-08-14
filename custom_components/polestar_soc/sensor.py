@@ -20,6 +20,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    CHARGING_STATUS_MAP,
     CHARGING_TYPE_MAP,
     CLIMATE_RUNNING_STATUS_MAP,
     DOMAIN,
@@ -50,11 +51,17 @@ def _battery_soc(data: dict, vin: str) -> int | None:
     return battery.get("batteryChargeLevelPercentage")
 
 
-def _charging_status(data: dict, vin: str) -> str:
-    battery = data.get("battery", {}).get(vin)
-    if battery is None:
-        return "Unknown"
-    return PolestarCoordinator.format_charging_status(battery.get("chargingStatus"))
+def _charging_status(data: dict, vin: str) -> str | None:
+    cep_battery = data.get("cep_battery", {}).get(vin)
+    if cep_battery is None:
+        return None
+    val = cep_battery.get("charging_status")
+    # The key is always present in a CEP battery payload, carrying None when the
+    # field is absent or zero — so this guard, not the map's default, is what
+    # keeps "no data" out of the UI.
+    if val is None:
+        return None
+    return CHARGING_STATUS_MAP.get(val, f"Unknown ({val})")
 
 
 def _charging_time_remaining(data: dict, vin: str) -> int | None:
@@ -437,8 +444,12 @@ _API_HEALTH_OPTIONS = ["ok", "degraded", "down"]
 class PolestarApiHealthSensor(CoordinatorEntity[PolestarCoordinator], SensorEntity):
     """Diagnostic sensor reporting the health of each Polestar API layer.
 
-    State derives from the worst per-layer ``consecutive_failures`` count:
-    ``down`` if any layer has ≥2, ``degraded`` if any has 1, else ``ok``.
+    State is the worst per-layer ``status`` reported by
+    ``_LayerHealth.to_dict()``, ranked ``ok`` < ``degraded`` < ``down``.  The
+    ranking lives there rather than here so that conditions the raw
+    ``consecutive_failures`` counter cannot express — notably a sticky schema
+    break, which holds a layer at ``degraded`` with a counter of 0 — reach the
+    entity state.
 
     Attributes mirror the per-layer dict from ``_LayerHealth.to_dict()``
     so users can drill into specific failing endpoints from the More
@@ -459,14 +470,14 @@ class PolestarApiHealthSensor(CoordinatorEntity[PolestarCoordinator], SensorEnti
     def native_value(self) -> str:
         """Return the worst per-layer status as the overall sensor state."""
         api_health = (self.coordinator.data or {}).get("api_health") or {}
-        worst = "ok"
+        worst = 0
         for layer in api_health.values():
-            failures = layer.get("consecutive_failures", 0)
-            if failures >= 2:
-                return "down"
-            if failures == 1:
-                worst = "degraded"
-        return worst
+            status = layer.get("status")
+            # Ignore anything not in the known ranking rather than letting a
+            # future status string raise from .index().
+            if status in _API_HEALTH_OPTIONS:
+                worst = max(worst, _API_HEALTH_OPTIONS.index(status))
+        return _API_HEALTH_OPTIONS[worst]
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -478,5 +489,6 @@ class PolestarApiHealthSensor(CoordinatorEntity[PolestarCoordinator], SensorEnti
             result[f"last_{layer}_code"] = state.get("last_code")
             result[f"last_{layer}_success_at"] = state.get("last_success_at")
             result[f"{layer}_failing_endpoints"] = state.get("failing_endpoints", [])
+            result[f"{layer}_schema_endpoints"] = state.get("schema_endpoints", [])
             result[f"{layer}_consecutive_failures"] = state.get("consecutive_failures", 0)
         return result

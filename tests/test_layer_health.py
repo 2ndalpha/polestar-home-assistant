@@ -6,6 +6,7 @@ import logging
 
 import grpc
 import pytest
+from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.polestar_soc.coordinator import (
     LAYER_CEP,
@@ -58,6 +59,27 @@ class TestClassifyError:
 
     def test_non_grpc_marker(self):
         assert _classify_error(_NonGrpcError("x")) == "_NonGrpcError"
+
+    def test_graphql_field_undefined_is_a_schema_error(self):
+        """The exact error Polestar returned in issue #22."""
+        err = UpdateFailed(
+            "GraphQL errors: Validation error of type FieldUndefined: Field "
+            "'chargingStatus' in type 'BatteryV2' is undefined @ "
+            "'carTelematicsV2/battery/chargingStatus'"
+        )
+        assert _classify_error(err) == "SCHEMA_ERROR"
+
+    def test_other_validation_errors_also_classify_as_schema(self):
+        """graphql-java uses the same prefix for every validation failure type."""
+        err = UpdateFailed("GraphQL errors: Validation error of type UnknownType: Unknown type")
+        assert _classify_error(err) == "SCHEMA_ERROR"
+
+    def test_transient_update_failed_is_not_a_schema_error(self):
+        assert _classify_error(UpdateFailed("timeout talking to API")) == "UpdateFailed"
+
+    def test_non_graphql_exception_mentioning_validation_is_unaffected(self):
+        """Only UpdateFailed is sniffed — gRPC and other errors keep their type name."""
+        assert _classify_error(ValueError("validation error")) == "ValueError"
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +157,7 @@ class TestLayerHealthCycleAccounting:
         h.record_failure(
             LAYER_GRAPHQL,
             "carTelematicsV2.battery",
-            _NonGrpcError("schema validation"),
+            _NonGrpcError("connection reset"),
         )
         h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
         h.end_cycle()
@@ -168,6 +190,118 @@ class TestLayerHealthCycleAccounting:
         for layer in (LAYER_PCCS, LAYER_CEP, LAYER_GRAPHQL):
             assert snap[layer]["status"] == "ok"
             assert snap[layer]["consecutive_failures"] == 0
+
+
+def _schema_error(field: str = "chargingStatus") -> UpdateFailed:
+    return UpdateFailed(
+        f"GraphQL errors: Validation error of type FieldUndefined: "
+        f"Field '{field}' in type 'BatteryV2' is undefined"
+    )
+
+
+class TestLayerHealthSchemaErrors:
+    """Issue #22: a permanently broken sub-query used to keep reporting ``ok``.
+
+    A partial-success cycle resets ``consecutive_failures`` to 0, so the layer
+    looked healthy forever while one endpoint was dead.
+    """
+
+    def test_schema_break_with_partial_success_reports_degraded(self):
+        h = _LayerHealth()
+        h.start_cycle()
+        h.record_failure(LAYER_GRAPHQL, "carTelematicsV2.battery", _schema_error())
+        h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+        h.end_cycle()
+        snap = h.to_dict()
+        assert snap[LAYER_GRAPHQL]["status"] == "degraded"
+        assert snap[LAYER_GRAPHQL]["consecutive_failures"] == 0
+        assert snap[LAYER_GRAPHQL]["last_code"] == "SCHEMA_ERROR"
+        assert snap[LAYER_GRAPHQL]["schema_endpoints"] == ["carTelematicsV2.battery"]
+
+    def test_stays_degraded_across_later_cycles(self):
+        """The flag is sticky — a schema break does not self-heal."""
+        h = _LayerHealth()
+        h.start_cycle()
+        h.record_failure(LAYER_GRAPHQL, "carTelematicsV2.battery", _schema_error())
+        h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+        h.end_cycle()
+
+        for _ in range(3):
+            h.start_cycle()
+            h.record_failure(LAYER_GRAPHQL, "carTelematicsV2.battery", _schema_error())
+            h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+            h.end_cycle()
+
+        snap = h.to_dict()
+        assert snap[LAYER_GRAPHQL]["status"] == "degraded"
+        assert snap[LAYER_GRAPHQL]["schema_endpoints"] == ["carTelematicsV2.battery"]
+
+    def test_names_the_culprit_after_failing_endpoints_is_cleared(self):
+        """start_cycle wipes failing_endpoints; schema_endpoints must survive it."""
+        h = _LayerHealth()
+        h.start_cycle()
+        h.record_failure(LAYER_GRAPHQL, "carTelematicsV2.battery", _schema_error())
+        h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+        h.end_cycle()
+
+        # A cycle where the broken endpoint is not even attempted.
+        h.start_cycle()
+        h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+        h.end_cycle()
+
+        snap = h.to_dict()
+        assert snap[LAYER_GRAPHQL]["failing_endpoints"] == []
+        assert snap[LAYER_GRAPHQL]["schema_endpoints"] == ["carTelematicsV2.battery"]
+        assert snap[LAYER_GRAPHQL]["status"] == "degraded"
+
+    def test_success_on_the_broken_endpoint_restores_ok(self):
+        h = _LayerHealth()
+        h.start_cycle()
+        h.record_failure(LAYER_GRAPHQL, "carTelematicsV2.battery", _schema_error())
+        h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+        h.end_cycle()
+        assert h.to_dict()[LAYER_GRAPHQL]["status"] == "degraded"
+
+        h.start_cycle()
+        h.record_success(LAYER_GRAPHQL, "carTelematicsV2.battery")
+        h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+        h.end_cycle()
+
+        snap = h.to_dict()
+        assert snap[LAYER_GRAPHQL]["status"] == "ok"
+        assert snap[LAYER_GRAPHQL]["schema_endpoints"] == []
+
+    def test_transient_partial_failure_still_reports_ok(self):
+        """Only schema errors are sticky — outages keep the existing behaviour."""
+        h = _LayerHealth()
+        h.start_cycle()
+        h.record_failure(LAYER_GRAPHQL, "carTelematicsV2.battery", UpdateFailed("timeout"))
+        h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+        h.end_cycle()
+        snap = h.to_dict()
+        assert snap[LAYER_GRAPHQL]["status"] == "ok"
+        assert snap[LAYER_GRAPHQL]["schema_endpoints"] == []
+
+    def test_a_full_outage_still_outranks_a_schema_break(self):
+        """Two dead cycles must read ``down``, not stay pinned at ``degraded``."""
+        h = _LayerHealth()
+        for _ in range(2):
+            h.start_cycle()
+            h.record_failure(LAYER_GRAPHQL, "carTelematicsV2.battery", _schema_error())
+            h.record_failure(LAYER_GRAPHQL, "carTelematicsV2.odometer", _schema_error())
+            h.end_cycle()
+        assert h.to_dict()[LAYER_GRAPHQL]["status"] == "down"
+
+    def test_other_layers_unaffected(self):
+        h = _LayerHealth()
+        h.start_cycle()
+        h.record_failure(LAYER_GRAPHQL, "carTelematicsV2.battery", _schema_error())
+        h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
+        h.record_success(LAYER_CEP, "cep_battery")
+        h.end_cycle()
+        snap = h.to_dict()
+        assert snap[LAYER_CEP]["status"] == "ok"
+        assert snap[LAYER_CEP]["schema_endpoints"] == []
 
 
 class TestLayerHealthWarnOnce:
@@ -228,7 +362,7 @@ class TestLayerHealthWarnOnce:
                 h.record_failure(
                     LAYER_GRAPHQL,
                     "carTelematicsV2.battery",
-                    _NonGrpcError("missing field"),
+                    _NonGrpcError("connection reset"),
                 )
                 h.record_success(LAYER_GRAPHQL, "carTelematicsV2.odometer")
                 h.end_cycle()
