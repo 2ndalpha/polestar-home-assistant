@@ -1,14 +1,15 @@
 """Tests for lock platform — vehicle door lock control."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import grpc
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.polestar_soc.cep import CepClient, CepError
 from custom_components.polestar_soc.const import DOMAIN
 from custom_components.polestar_soc.lock import PolestarLock
-from custom_components.polestar_soc.pccs import PccsError
+from custom_components.polestar_soc.pccs import PccsClient
 
 VIN = "YSMYKEAE1RB000001"
 
@@ -22,6 +23,8 @@ def _make_lock(
     coordinator = MagicMock()
     coordinator.data = coordinator_data
     coordinator.async_request_refresh = AsyncMock()
+    coordinator.cep = create_autospec(CepClient, instance=True)
+    coordinator.pccs = create_autospec(PccsClient, instance=True)
     return PolestarLock(coordinator, vehicle, vin)
 
 
@@ -77,7 +80,7 @@ class TestEntity:
 
 class TestAsyncLock:
     @pytest.mark.asyncio
-    async def test_calls_pccs_lock(self, sample_coordinator_data, sample_vehicle):
+    async def test_calls_cep_lock(self, sample_coordinator_data, sample_vehicle):
         lock = _make_lock(sample_coordinator_data, sample_vehicle)
 
         hass = MagicMock()
@@ -86,7 +89,7 @@ class TestAsyncLock:
 
         await lock.async_lock()
 
-        lock.coordinator.pccs.lock.assert_called_once_with(VIN)
+        lock.coordinator.cep.lock.assert_called_once_with(VIN)
         lock.coordinator.async_request_refresh.assert_called_once()
 
     @pytest.mark.asyncio
@@ -101,22 +104,27 @@ class TestAsyncLock:
             await lock.async_lock()
 
     @pytest.mark.asyncio
-    async def test_pccs_error_raises_ha_error(self, sample_coordinator_data, sample_vehicle):
+    async def test_cep_error_raises_ha_error(self, sample_coordinator_data, sample_vehicle):
         lock = _make_lock(sample_coordinator_data, sample_vehicle)
+        lock.coordinator.cep.lock.side_effect = CepError(
+            "Lock failed: INVOCATION_SPECIFIC_ERROR (a door is open)"
+        )
 
         hass = MagicMock()
-        hass.async_add_executor_job = AsyncMock(
-            side_effect=PccsError("Lock failed: INVOCATION_SPECIFIC_ERROR (a door is open)")
-        )
+        hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
         lock.hass = hass
 
-        with pytest.raises(HomeAssistantError, match="Failed to lock"):
+        with pytest.raises(
+            HomeAssistantError,
+            match=r"^Failed to lock: Lock failed: INVOCATION_SPECIFIC_ERROR \(a door is open\)$",
+        ):
             await lock.async_lock()
+        lock.coordinator.async_request_refresh.assert_not_called()
 
 
 class TestAsyncUnlock:
     @pytest.mark.asyncio
-    async def test_calls_pccs_unlock(self, sample_coordinator_data, sample_vehicle):
+    async def test_calls_cep_unlock(self, sample_coordinator_data, sample_vehicle):
         lock = _make_lock(sample_coordinator_data, sample_vehicle)
 
         hass = MagicMock()
@@ -125,8 +133,23 @@ class TestAsyncUnlock:
 
         await lock.async_unlock()
 
-        lock.coordinator.pccs.unlock.assert_called_once_with(VIN)
+        lock.coordinator.cep.unlock.assert_called_once_with(VIN)
         lock.coordinator.async_request_refresh.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cep_error_raises_ha_error(self, sample_coordinator_data, sample_vehicle):
+        lock = _make_lock(sample_coordinator_data, sample_vehicle)
+        lock.coordinator.cep.unlock.side_effect = CepError("Unlock failed: CAR_OFFLINE")
+
+        hass = MagicMock()
+        hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
+        lock.hass = hass
+
+        with pytest.raises(
+            HomeAssistantError, match=r"^Failed to unlock: Unlock failed: CAR_OFFLINE$"
+        ):
+            await lock.async_unlock()
+        lock.coordinator.async_request_refresh.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_grpc_error_raises_ha_error(self, sample_coordinator_data, sample_vehicle):

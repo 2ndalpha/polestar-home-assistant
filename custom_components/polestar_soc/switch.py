@@ -14,6 +14,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .cep import CepError
 from .const import DOMAIN
 from .coordinator import PolestarCoordinator
 from .pccs import PccsError
@@ -165,10 +166,10 @@ class PolestarClimateSwitch(CoordinatorEntity[PolestarCoordinator], SwitchEntity
         """Start climate pre-conditioning."""
         try:
             await self.hass.async_add_executor_job(
-                self.coordinator.pccs.climatization_start,
+                self.coordinator.cep.climatization_start,
                 self._vin,
             )
-        except (grpc.RpcError, PccsError) as err:
+        except (grpc.RpcError, CepError) as err:
             raise HomeAssistantError(f"Failed to start climate: {err}") from err
         await self.coordinator.async_request_refresh()
 
@@ -176,10 +177,10 @@ class PolestarClimateSwitch(CoordinatorEntity[PolestarCoordinator], SwitchEntity
         """Stop climate pre-conditioning."""
         try:
             await self.hass.async_add_executor_job(
-                self.coordinator.pccs.climatization_stop,
+                self.coordinator.cep.climatization_stop,
                 self._vin,
             )
-        except (grpc.RpcError, PccsError) as err:
+        except (grpc.RpcError, CepError) as err:
             raise HomeAssistantError(f"Failed to stop climate: {err}") from err
         await self.coordinator.async_request_refresh()
 

@@ -1,13 +1,14 @@
 """Tests for switch platform — charging timer toggle."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import grpc
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.polestar_soc.cep import CepClient, CepError
 from custom_components.polestar_soc.const import DOMAIN
-from custom_components.polestar_soc.pccs import PccsError
+from custom_components.polestar_soc.pccs import PccsClient, PccsError
 from custom_components.polestar_soc.switch import PolestarChargeTimerSwitch, PolestarClimateSwitch
 
 VIN = "YSMYKEAE1RB000001"
@@ -161,6 +162,8 @@ def _make_climate_switch(
     coordinator = MagicMock()
     coordinator.data = coordinator_data
     coordinator.async_request_refresh = AsyncMock()
+    coordinator.cep = create_autospec(CepClient, instance=True)
+    coordinator.pccs = create_autospec(PccsClient, instance=True)
     return PolestarClimateSwitch(coordinator, vehicle, vin)
 
 
@@ -217,7 +220,7 @@ class TestClimateEntity:
 
 class TestClimateTurnOn:
     @pytest.mark.asyncio
-    async def test_calls_climatization_start(self, sample_coordinator_data, sample_vehicle):
+    async def test_calls_cep_climatization_start(self, sample_coordinator_data, sample_vehicle):
         switch = _make_climate_switch(sample_coordinator_data, sample_vehicle)
 
         hass = MagicMock()
@@ -226,7 +229,7 @@ class TestClimateTurnOn:
 
         await switch.async_turn_on()
 
-        switch.coordinator.pccs.climatization_start.assert_called_once_with(VIN)
+        switch.coordinator.cep.climatization_start.assert_called_once_with(VIN)
         switch.coordinator.async_request_refresh.assert_called_once()
 
     @pytest.mark.asyncio
@@ -241,22 +244,27 @@ class TestClimateTurnOn:
             await switch.async_turn_on()
 
     @pytest.mark.asyncio
-    async def test_pccs_error_raises_ha_error(self, sample_coordinator_data, sample_vehicle):
+    async def test_cep_error_raises_ha_error(self, sample_coordinator_data, sample_vehicle):
         switch = _make_climate_switch(sample_coordinator_data, sample_vehicle)
+        switch.coordinator.cep.climatization_start.side_effect = CepError(
+            "Climatization failed: CAR_OFFLINE"
+        )
 
         hass = MagicMock()
-        hass.async_add_executor_job = AsyncMock(
-            side_effect=PccsError("Climatization command failed: CAR_OFFLINE")
-        )
+        hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
         switch.hass = hass
 
-        with pytest.raises(HomeAssistantError, match="Failed to start climate"):
+        with pytest.raises(
+            HomeAssistantError,
+            match=r"^Failed to start climate: Climatization failed: CAR_OFFLINE$",
+        ):
             await switch.async_turn_on()
+        switch.coordinator.async_request_refresh.assert_not_called()
 
 
 class TestClimateTurnOff:
     @pytest.mark.asyncio
-    async def test_calls_climatization_stop(self, sample_coordinator_data, sample_vehicle):
+    async def test_calls_cep_climatization_stop(self, sample_coordinator_data, sample_vehicle):
         switch = _make_climate_switch(sample_coordinator_data, sample_vehicle)
 
         hass = MagicMock()
@@ -265,7 +273,7 @@ class TestClimateTurnOff:
 
         await switch.async_turn_off()
 
-        switch.coordinator.pccs.climatization_stop.assert_called_once_with(VIN)
+        switch.coordinator.cep.climatization_stop.assert_called_once_with(VIN)
         switch.coordinator.async_request_refresh.assert_called_once()
 
     @pytest.mark.asyncio
