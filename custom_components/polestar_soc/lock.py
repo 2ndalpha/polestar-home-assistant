@@ -13,9 +13,9 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .cep import CepError
 from .const import DOMAIN
 from .coordinator import PolestarCoordinator
-from .pccs import PccsError
 
 
 async def async_setup_entry(
@@ -81,10 +81,10 @@ class PolestarLock(CoordinatorEntity[PolestarCoordinator], LockEntity):
         """Lock the vehicle."""
         try:
             await self.hass.async_add_executor_job(
-                self.coordinator.pccs.lock,
+                self.coordinator.cep.lock,
                 self._vin,
             )
-        except (grpc.RpcError, PccsError) as err:
+        except (grpc.RpcError, CepError) as err:
             raise HomeAssistantError(f"Failed to lock: {err}") from err
         await self.coordinator.async_request_refresh()
 
@@ -92,9 +92,9 @@ class PolestarLock(CoordinatorEntity[PolestarCoordinator], LockEntity):
         """Unlock the vehicle."""
         try:
             await self.hass.async_add_executor_job(
-                self.coordinator.pccs.unlock,
+                self.coordinator.cep.unlock,
                 self._vin,
             )
-        except (grpc.RpcError, PccsError) as err:
+        except (grpc.RpcError, CepError) as err:
             raise HomeAssistantError(f"Failed to unlock: {err}") from err
         await self.coordinator.async_request_refresh()

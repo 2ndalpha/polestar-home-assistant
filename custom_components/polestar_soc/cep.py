@@ -2,7 +2,8 @@
 
 Communicates with the Volvo CEP gRPC API at cepmobtoken.eu.prod.c3.volvocars.com
 for reading vehicle state data (climate status, battery, etc.) and sending
-vehicle commands (window control) via the InvocationService.
+vehicle commands (climatization, lock/unlock, window control) via the
+InvocationService.
 
 Uses the web OAuth access token for reads and the PCCS 2FA token for writes.
 """
@@ -10,6 +11,7 @@ Uses the web OAuth access token for reads and the PCCS 2FA token for writes.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import grpc
 from homeassistant.exceptions import HomeAssistantError
@@ -24,6 +26,7 @@ from .const import (
 from .proto import (
     _decode_message,
     _encode_field_bytes,
+    _encode_field_fixed32,
     _encode_field_varint,
     _get_double,
     _get_float,
@@ -49,6 +52,10 @@ _METHOD_GET_AVAILABILITY = (
 _METHOD_GET_HEALTH = "/services.vehiclestates.health.HealthService/GetHealth"
 _METHOD_GET_LOCATION = "/dtlinternet.DtlInternetService/GetLastKnownLocation"
 _SVC_INVOCATION = "/invocation.InvocationService"
+_METHOD_CLIMATIZATION_START = f"{_SVC_INVOCATION}/ClimatizationStart"
+_METHOD_CLIMATIZATION_STOP = f"{_SVC_INVOCATION}/ClimatizationStop"
+_METHOD_LOCK = f"{_SVC_INVOCATION}/Lock"
+_METHOD_UNLOCK = f"{_SVC_INVOCATION}/Unlock"
 _METHOD_WINDOW_CONTROL = f"{_SVC_INVOCATION}/WindowControl"
 
 # BatteryState field numbers captured in raw_fields for debugging.
@@ -80,6 +87,57 @@ def _build_cep_invocation_request(vin: str) -> bytes:
     id (UUID) and expirationTimestamp fields.
     """
     return _encode_field_bytes(1, vin.encode("utf-8"))
+
+
+def _build_climatization_start_request(vin: str, temperature: float = 22.0) -> bytes:
+    """Build ClimatizationStartRequest bytes for CEP.
+
+    ClimatizationStartRequest:
+        field 1: InvocationRequest (message) — CEP format (VIN only)
+        field 2: start (bool)
+        field 3: compartmentTemperatureCelsius (float, fixed32)
+    """
+    msg = _encode_field_bytes(1, _build_cep_invocation_request(vin))
+    msg += _encode_field_varint(2, 1)  # start = true
+    msg += _encode_field_fixed32(3, temperature)
+    return msg
+
+
+def _build_climatization_stop_request(vin: str) -> bytes:
+    """Build ClimatizationStopRequest bytes for CEP.
+
+    ClimatizationStopRequest:
+        field 1: InvocationRequest (message) — CEP format (VIN only)
+    """
+    return _encode_field_bytes(1, _build_cep_invocation_request(vin))
+
+
+def _build_lock_request(vin: str, lock_type: int = 0) -> bytes:
+    """Build CarLockRequest bytes for CEP.
+
+    CarLockRequest:
+        field 1: InvocationRequest (message) — CEP format (VIN only)
+        field 2: lockType (LockType enum)
+            0 = LOCK
+            1 = LOCK_REDUCED_GUARD
+    """
+    msg = _encode_field_bytes(1, _build_cep_invocation_request(vin))
+    msg += _encode_field_varint(2, lock_type)
+    return msg
+
+
+def _build_unlock_request(vin: str) -> bytes:
+    """Build CarUnlockRequest bytes for CEP.
+
+    CarUnlockRequest:
+        field 1: InvocationRequest (message) — CEP format (VIN only)
+        field 2: unlockType (UnlockType enum)
+            0 = UNLOCK_TYPE_UNSPECIFIED
+            1 = UNLOCK_TYPE_TRUNK_ONLY
+    """
+    msg = _encode_field_bytes(1, _build_cep_invocation_request(vin))
+    msg += _encode_field_varint(2, 0)  # UNLOCK_TYPE_UNSPECIFIED
+    return msg
 
 
 def _build_window_control_request(vin: str, control_type: int) -> bytes:
@@ -423,13 +481,38 @@ def _parse_location_response(data: bytes) -> dict:
     }
 
 
+def _lock_error_context(data: bytes) -> str:
+    """Extract lock-specific error context from a LockResponse.
+
+    LockResponse field 2 is lockError (LockError enum):
+        0 = LOCK_ERROR_UNSPECIFIED
+        1 = LOCK_ERROR_DOOR_OPEN
+    """
+    if not data:
+        return ""
+    outer = _decode_message(data)
+    lock_error = _get_int(outer, 2, 0)
+    # _get_int hands back raw bytes when the field arrives length-delimited.
+    if not isinstance(lock_error, int):
+        return ""
+    if lock_error == 1:
+        return "a door is open"
+    if lock_error > 1:
+        return f"lock error (code {lock_error})"
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # CepClient
 # ---------------------------------------------------------------------------
 
 
 class CepError(HomeAssistantError):
-    """Error returned by a CEP InvocationService command."""
+    """A CEP InvocationService command was not sent, or did not succeed.
+
+    Raised when the VIN is empty or whitespace-only, so nothing is sent, and
+    when the stream ends in a status other than DELIVERED or SUCCESS.
+    """
 
 
 class CepClient:
@@ -590,7 +673,7 @@ class CepClient:
             _LOGGER.debug("CEP GetLastKnownLocation failed: %s", err)
             raise
 
-    # -- Window Control (InvocationService) ---------------------------------
+    # -- Commands (InvocationService) ---------------------------------------
 
     def _send_invocation(
         self,
@@ -599,6 +682,7 @@ class CepClient:
         request: bytes,
         *,
         command_name: str = "Command",
+        error_context_fn: Callable[[bytes], str] | None = None,
     ) -> dict:
         """Send a CEP InvocationService command and wait for terminal status.
 
@@ -608,7 +692,18 @@ class CepClient:
 
         The server may cancel the stream before SUCCESS arrives. If we
         received DELIVERED before cancellation, we treat it as success.
+
+        Raises CepError without sending anything when the VIN is empty or
+        whitespace-only.
+
+        Args:
+            command_name: Human-readable name for error messages.
+            error_context_fn: Optional callback that receives the raw terminal
+                response bytes and returns additional error context text.
         """
+        if not vin or not vin.strip():
+            raise CepError(f"{command_name} not sent: the vehicle VIN is empty")
+
         channel = self._get_channel()
         method = channel.unary_stream(
             method_path,
@@ -616,9 +711,11 @@ class CepClient:
             response_deserializer=_identity_deserialize,
         )
         result = _parse_invocation_response(b"")
+        last_raw = b""
         try:
             responses = method(request, metadata=self._write_metadata(vin), timeout=60)
             for response in responses:
+                last_raw = response
                 result = _parse_invocation_response(response)
                 status = result.get("status", 0)
                 if status not in _INVOCATION_INTERMEDIATE_STATUSES:
@@ -640,15 +737,134 @@ class CepClient:
             msg = f"{command_name} failed: {status_name}"
             if server_msg:
                 msg += f" - {server_msg}"
+            if error_context_fn and last_raw:
+                ctx = error_context_fn(last_raw)
+                if ctx:
+                    msg += f" ({ctx})"
             raise CepError(msg)
 
         return result
+
+    def climatization_start(self, vin: str, temperature: float = 22.0) -> dict:
+        """Start vehicle climate pre-conditioning.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+
+        Args:
+            vin: Must not be empty or whitespace-only.
+            temperature: Target cabin temperature in °C.
+
+        Returns:
+            The parsed InvocationResponse (``id``, ``vin``, ``status``,
+            ``message``). ``status`` is 6 (SUCCESS), or 4 (DELIVERED) when the
+            stream ended or was cancelled after DELIVERED and before SUCCESS.
+
+        Raises:
+            CepError: The VIN is empty, and nothing was sent; or the stream
+                ended on any other status, or on none, and the error carries
+                that status's name and any message the server sent.
+            grpc.RpcError: The stream failed before DELIVERED arrived.
+        """
+        request = _build_climatization_start_request(vin, temperature)
+        return self._send_invocation(
+            vin, _METHOD_CLIMATIZATION_START, request, command_name="Climatization"
+        )
+
+    def climatization_stop(self, vin: str) -> dict:
+        """Stop vehicle climate pre-conditioning.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+
+        Args:
+            vin: Must not be empty or whitespace-only.
+
+        Returns:
+            The parsed InvocationResponse (``id``, ``vin``, ``status``,
+            ``message``). ``status`` is 6 (SUCCESS), or 4 (DELIVERED) when the
+            stream ended or was cancelled after DELIVERED and before SUCCESS.
+
+        Raises:
+            CepError: The VIN is empty, and nothing was sent; or the stream
+                ended on any other status, or on none, and the error carries
+                that status's name and any message the server sent.
+            grpc.RpcError: The stream failed before DELIVERED arrived.
+        """
+        request = _build_climatization_stop_request(vin)
+        return self._send_invocation(
+            vin, _METHOD_CLIMATIZATION_STOP, request, command_name="Climatization"
+        )
+
+    def lock(self, vin: str, lock_type: int = 0) -> dict:
+        """Lock the vehicle.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+
+        Args:
+            vin: Must not be empty or whitespace-only.
+            lock_type: LockType enum. 0 (LOCK) locks fully; 1
+                (LOCK_REDUCED_GUARD) locks with reduced guard.
+
+        Returns:
+            The parsed InvocationResponse (``id``, ``vin``, ``status``,
+            ``message``). ``status`` is 6 (SUCCESS), or 4 (DELIVERED) when the
+            stream ended or was cancelled after DELIVERED and before SUCCESS.
+
+        Raises:
+            CepError: The VIN is empty, and nothing was sent; or the stream
+                ended on any other status, or on none, and the error carries
+                that status's name, any message the server sent and any lock
+                error, such as an open door.
+            grpc.RpcError: The stream failed before DELIVERED arrived.
+        """
+        request = _build_lock_request(vin, lock_type)
+        return self._send_invocation(
+            vin,
+            _METHOD_LOCK,
+            request,
+            command_name="Lock",
+            error_context_fn=_lock_error_context,
+        )
+
+    def unlock(self, vin: str) -> dict:
+        """Unlock the vehicle.
+
+        Requires the PCCS 2FA token (customer:attributes:write scope).
+
+        Args:
+            vin: Must not be empty or whitespace-only.
+
+        Returns:
+            The parsed InvocationResponse (``id``, ``vin``, ``status``,
+            ``message``). ``status`` is 6 (SUCCESS), or 4 (DELIVERED) when the
+            stream ended or was cancelled after DELIVERED and before SUCCESS.
+
+        Raises:
+            CepError: The VIN is empty, and nothing was sent; or the stream
+                ended on any other status, or on none, and the error carries
+                that status's name and any message the server sent.
+            grpc.RpcError: The stream failed before DELIVERED arrived.
+        """
+        request = _build_unlock_request(vin)
+        return self._send_invocation(vin, _METHOD_UNLOCK, request, command_name="Unlock")
 
     def window_open(self, vin: str) -> dict:
         """Open all vehicle windows.
 
         Requires the PCCS 2FA token (customer:attributes:write scope).
-        WindowControl is only available on CEP, not PCCS.
+
+        Args:
+            vin: Must not be empty or whitespace-only.
+
+        Returns:
+            The parsed InvocationResponse (``id``, ``vin``, ``status``,
+            ``message``). ``status`` is 6 (SUCCESS), or 4 (DELIVERED) when the
+            stream ended or was cancelled after DELIVERED and before SUCCESS.
+
+        Raises:
+            CepError: The VIN is empty, and nothing was sent; or the stream
+                ended on any other status, or on none, and the error carries
+                that status's name and any message the server sent.
+            grpc.RpcError: The stream failed before DELIVERED arrived.
         """
         request = _build_window_control_request(vin, 1)  # OPEN_ALL
         return self._send_invocation(
@@ -659,7 +875,20 @@ class CepClient:
         """Close all vehicle windows.
 
         Requires the PCCS 2FA token (customer:attributes:write scope).
-        WindowControl is only available on CEP, not PCCS.
+
+        Args:
+            vin: Must not be empty or whitespace-only.
+
+        Returns:
+            The parsed InvocationResponse (``id``, ``vin``, ``status``,
+            ``message``). ``status`` is 6 (SUCCESS), or 4 (DELIVERED) when the
+            stream ended or was cancelled after DELIVERED and before SUCCESS.
+
+        Raises:
+            CepError: The VIN is empty, and nothing was sent; or the stream
+                ended on any other status, or on none, and the error carries
+                that status's name and any message the server sent.
+            grpc.RpcError: The stream failed before DELIVERED arrived.
         """
         request = _build_window_control_request(vin, 2)  # CLOSE_ALL
         return self._send_invocation(

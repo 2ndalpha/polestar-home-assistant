@@ -1,14 +1,24 @@
-"""Tests for CEP gRPC client protobuf parsers and request builder."""
+"""Tests for CEP gRPC client protobuf parsers, request builders and commands."""
 
 import struct
+from collections.abc import Iterable, Iterator
+from unittest.mock import MagicMock
 
+import grpc
 import pytest
 
 from custom_components.polestar_soc.cep import (
+    CepClient,
+    CepError,
+    _build_climatization_start_request,
+    _build_climatization_stop_request,
     _build_location_request,
+    _build_lock_request,
+    _build_unlock_request,
     _build_vin_request,
     _format_climate_status,
     _format_heating_intensity,
+    _lock_error_context,
     _parse_availability_response,
     _parse_battery_response,
     _parse_climate_response,
@@ -21,6 +31,7 @@ from custom_components.polestar_soc.proto import (
     _encode_field_bytes,
     _encode_field_fixed32,
     _encode_field_varint,
+    _get_float,
     _get_submessage,
 )
 
@@ -56,6 +67,200 @@ class TestBuildVinRequest:
         # Should be: tag(field 2, wire type 2) + varint(len) + VIN bytes
         expected = _encode_field_bytes(2, TEST_VIN.encode("utf-8"))
         assert result == expected
+
+
+# ---------------------------------------------------------------------------
+# InvocationService commands
+# ---------------------------------------------------------------------------
+
+# CEP InvocationRequest: field 1 = VIN, nothing else.
+TEST_INVOCATION_REQUEST = _encode_field_bytes(1, TEST_VIN.encode("utf-8"))
+
+
+def _invocation_response(status: int, message: str = "", lock_error: int = 0) -> bytes:
+    """Build one InvocationService stream message as C3 sends it."""
+    inner = (
+        _encode_field_bytes(1, b"0b6c2f4e-request-id")
+        + _encode_field_bytes(2, TEST_VIN.encode("utf-8"))
+        + _encode_field_varint(3, status)
+    )
+    if message:
+        inner += _encode_field_bytes(4, message.encode("utf-8"))
+    inner += _encode_field_varint(5, 1_760_000_000_000)
+    response = _encode_field_bytes(1, inner)
+    if lock_error:
+        response += _encode_field_varint(2, lock_error)
+    return response
+
+
+def _success_stream() -> list[bytes]:
+    return [_invocation_response(1), _invocation_response(4), _invocation_response(6)]
+
+
+def _stream_then_cancel(*responses: bytes) -> Iterator[bytes]:
+    yield from responses
+    raise grpc.RpcError()
+
+
+def _client_streaming(responses: Iterable[bytes]) -> tuple[CepClient, MagicMock]:
+    """Create a CepClient whose channel streams ``responses`` for any command."""
+    channel = MagicMock()
+    channel.unary_stream.return_value.return_value = iter(responses)
+    client = CepClient("read-token", write_access_token="write-token")
+    client._channel = channel
+    return client, channel
+
+
+class TestBuildCommandRequests:
+    def test_climatization_start_field_tree(self):
+        fields = _decode_message(_build_climatization_start_request(TEST_VIN, 21.5))
+        assert sorted(fields) == [1, 2, 3]
+        assert fields[1] == [TEST_INVOCATION_REQUEST]
+        assert fields[2] == [1]
+        assert _get_float(fields, 3) == 21.5
+
+    def test_climatization_start_defaults_to_22_degrees(self):
+        fields = _decode_message(_build_climatization_start_request(TEST_VIN))
+        assert _get_float(fields, 3) == 22.0
+
+    def test_climatization_stop_field_tree(self):
+        data = _build_climatization_stop_request(TEST_VIN)
+        assert _decode_message(data) == {1: [TEST_INVOCATION_REQUEST]}
+
+    def test_lock_field_tree_sends_lock_type_zero(self):
+        data = _build_lock_request(TEST_VIN)
+        assert _decode_message(data) == {1: [TEST_INVOCATION_REQUEST], 2: [0]}
+
+    def test_lock_reduced_guard_field_tree(self):
+        data = _build_lock_request(TEST_VIN, lock_type=1)
+        assert _decode_message(data) == {1: [TEST_INVOCATION_REQUEST], 2: [1]}
+
+    def test_unlock_field_tree_sends_unspecified_unlock_type(self):
+        data = _build_unlock_request(TEST_VIN)
+        assert _decode_message(data) == {1: [TEST_INVOCATION_REQUEST], 2: [0]}
+
+
+class TestCepClientCommands:
+    @pytest.mark.parametrize(
+        ("command", "method_path", "expected_request"),
+        [
+            pytest.param(
+                "climatization_start",
+                "/invocation.InvocationService/ClimatizationStart",
+                _build_climatization_start_request(TEST_VIN),
+                id="climatization_start",
+            ),
+            pytest.param(
+                "climatization_stop",
+                "/invocation.InvocationService/ClimatizationStop",
+                _build_climatization_stop_request(TEST_VIN),
+                id="climatization_stop",
+            ),
+            pytest.param(
+                "lock",
+                "/invocation.InvocationService/Lock",
+                _build_lock_request(TEST_VIN),
+                id="lock",
+            ),
+            pytest.param(
+                "unlock",
+                "/invocation.InvocationService/Unlock",
+                _build_unlock_request(TEST_VIN),
+                id="unlock",
+            ),
+        ],
+    )
+    def test_sends_to_c3_invocation_service_with_write_token_and_vin(
+        self, command, method_path, expected_request
+    ):
+        client, channel = _client_streaming(_success_stream())
+
+        result = getattr(client, command)(TEST_VIN)
+
+        assert channel.unary_stream.call_args.args[0] == method_path
+        stream_call = channel.unary_stream.return_value.call_args
+        assert stream_call.args[0] == expected_request
+        assert stream_call.kwargs["metadata"] == [
+            ("authorization", "Bearer write-token"),
+            ("vin", TEST_VIN),
+        ]
+        assert result["status"] == 6
+
+    @pytest.mark.parametrize("vin", ["", "   "], ids=["empty", "whitespace"])
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "climatization_start",
+            "climatization_stop",
+            "lock",
+            "unlock",
+            "window_open",
+            "window_close",
+        ],
+    )
+    def test_empty_vin_raises_before_any_rpc(self, command, vin):
+        client, channel = _client_streaming(_success_stream())
+
+        with pytest.raises(CepError, match="not sent: the vehicle VIN is empty"):
+            getattr(client, command)(vin)
+
+        channel.unary_stream.assert_not_called()
+
+    def test_car_offline_terminal_status_raises_cep_error(self):
+        client, _ = _client_streaming(
+            [_invocation_response(1), _invocation_response(2, "Vehicle not reachable")]
+        )
+
+        with pytest.raises(
+            CepError, match=r"^Climatization failed: CAR_OFFLINE - Vehicle not reachable$"
+        ):
+            client.climatization_start(TEST_VIN)
+
+    def test_lock_failure_includes_lock_error_context(self):
+        client, _ = _client_streaming(
+            [_invocation_response(1), _invocation_response(11, lock_error=1)]
+        )
+
+        with pytest.raises(
+            CepError, match=r"^Lock failed: INVOCATION_SPECIFIC_ERROR \(a door is open\)$"
+        ):
+            client.lock(TEST_VIN)
+
+    def test_stream_cancelled_after_delivered_returns_delivered(self):
+        client, _ = _client_streaming(
+            _stream_then_cancel(_invocation_response(1), _invocation_response(4))
+        )
+
+        assert client.climatization_stop(TEST_VIN)["status"] == 4
+
+    def test_stream_cancelled_before_delivered_raises_rpc_error(self):
+        client, _ = _client_streaming(_stream_then_cancel(_invocation_response(1)))
+
+        with pytest.raises(grpc.RpcError):
+            client.unlock(TEST_VIN)
+
+
+class TestLockErrorContext:
+    def test_returns_empty_string_for_empty_response(self):
+        assert _lock_error_context(b"") == ""
+
+    def test_no_lock_error(self):
+        assert _lock_error_context(_invocation_response(6)) == ""
+
+    def test_door_open_error(self):
+        assert _lock_error_context(_invocation_response(11, lock_error=1)) == "a door is open"
+
+    def test_returns_empty_string_for_unspecified_lock_error(self):
+        data = _invocation_response(6) + _encode_field_varint(2, 0)
+        assert _lock_error_context(data) == ""
+
+    def test_returns_empty_string_for_length_delimited_lock_error(self):
+        data = _invocation_response(11) + _encode_field_bytes(2, b"\x01")
+        assert _lock_error_context(data) == ""
+
+    def test_unknown_error_code(self):
+        data = _invocation_response(11, lock_error=99)
+        assert _lock_error_context(data) == "lock error (code 99)"
 
 
 class TestParseClimateResponse:
