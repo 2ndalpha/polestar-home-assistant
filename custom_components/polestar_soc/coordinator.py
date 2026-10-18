@@ -22,6 +22,8 @@ from .cep import CepClient
 from .const import (
     API_URL,
     CLIENT_ID,
+    CONF_SCAN_INTERVAL_MINUTES,
+    DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
     OIDC_AUTH_URL,
     OIDC_BASE_URL,
@@ -32,7 +34,6 @@ from .const import (
     QUERY_TELEMATICS_BATTERY,
     QUERY_TELEMATICS_ODOMETER,
     REDIRECT_URI,
-    SCAN_INTERVAL,
     SCOPE,
 )
 from .pccs import PccsClient
@@ -722,7 +723,9 @@ class PolestarCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=SCAN_INTERVAL,
+            update_interval=datetime.timedelta(
+                minutes=entry.options.get(CONF_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES)
+            ),
         )
         self.config_entry = entry
         self.api = PolestarAPI()

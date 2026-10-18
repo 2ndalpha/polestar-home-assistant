@@ -5,10 +5,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResult, FlowResultType, InvalidData
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.polestar_soc.config_flow import PolestarSOCConfigFlow
+from custom_components.polestar_soc.const import CONF_SCAN_INTERVAL_MINUTES, DOMAIN
 
 _WEB_TOKENS = {
     "access_token": "web_access_tok",
@@ -208,3 +210,64 @@ class TestConfigFlowUser:
             # Should create entry directly, skipping OTP
             assert result["type"] is FlowResultType.CREATE_ENTRY
             assert result["data"]["pccs_access_token"] == "pccs_access_tok"
+
+
+def _add_entry(hass: HomeAssistant, options: dict) -> MockConfigEntry:
+    entry = MockConfigEntry(domain=DOMAIN, data={"email": "test@polestar.com"}, options=options)
+    entry.add_to_hass(hass)
+    return entry
+
+
+def _schema_default(result: FlowResult, key: str) -> object:
+    marker = next(m for m in result["data_schema"].schema if m == key)
+    return marker.default()
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+class TestOptionsFlow:
+    """Test the options flow that sets the polling interval."""
+
+    async def test_form_prefills_the_current_interval(self, hass: HomeAssistant):
+        entry = _add_entry(hass, {CONF_SCAN_INTERVAL_MINUTES: 2})
+
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+        assert result["type"] is FlowResultType.FORM
+        assert _schema_default(result, CONF_SCAN_INTERVAL_MINUTES) == 2
+
+    async def test_form_prefills_five_minutes_when_never_set(self, hass: HomeAssistant):
+        entry = _add_entry(hass, {})
+
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+        assert _schema_default(result, CONF_SCAN_INTERVAL_MINUTES) == 5
+
+    async def test_submit_stores_the_interval_as_whole_minutes(self, hass: HomeAssistant):
+        entry = _add_entry(hass, {})
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+        # The changed option schedules a reload; keep it from reaching the real API.
+        with patch("custom_components.polestar_soc.async_setup_entry", return_value=True):
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"], {CONF_SCAN_INTERVAL_MINUTES: 1}
+            )
+            await hass.async_block_till_done()
+
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert entry.options == {CONF_SCAN_INTERVAL_MINUTES: 1}
+        # The number selector hands back a float; the coordinator expects an int.
+        assert type(entry.options[CONF_SCAN_INTERVAL_MINUTES]) is int
+
+    @pytest.mark.parametrize("minutes", [0, 61])
+    async def test_rejects_an_interval_outside_one_to_sixty_minutes(
+        self, hass: HomeAssistant, minutes: int
+    ):
+        entry = _add_entry(hass, {})
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+        with pytest.raises(InvalidData):
+            await hass.config_entries.options.async_configure(
+                result["flow_id"], {CONF_SCAN_INTERVAL_MINUTES: minutes}
+            )
+
+        assert entry.options == {}

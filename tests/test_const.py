@@ -4,14 +4,16 @@ from custom_components.polestar_soc.const import (
     API_URL,
     CHARGING_STATUS_MAP,
     CLIENT_ID,
+    DEFAULT_SCAN_INTERVAL_MINUTES,
     DOMAIN,
+    MAX_SCAN_INTERVAL_MINUTES,
+    MIN_SCAN_INTERVAL_MINUTES,
     OIDC_AUTH_URL,
     OIDC_BASE_URL,
     OIDC_TOKEN_URL,
     PCCS_API_HOST,
     QUERY_TELEMATICS_BATTERY,
     REDIRECT_URI,
-    SCAN_INTERVAL,
 )
 
 
@@ -19,8 +21,9 @@ def test_domain_is_set():
     assert DOMAIN == "polestar_soc"
 
 
-def test_scan_interval_positive():
-    assert SCAN_INTERVAL.total_seconds() > 0
+def test_default_scan_interval_is_within_the_allowed_range():
+    assert 0 < MIN_SCAN_INTERVAL_MINUTES <= DEFAULT_SCAN_INTERVAL_MINUTES
+    assert DEFAULT_SCAN_INTERVAL_MINUTES <= MAX_SCAN_INTERVAL_MINUTES
 
 
 def test_oauth_urls_use_https():

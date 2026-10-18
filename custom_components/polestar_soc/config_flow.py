@@ -6,10 +6,32 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
+from homeassistant.const import UnitOfTime
+from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+)
 
-from .const import DOMAIN, PCCS_ACR_VALUES, PCCS_CLIENT_ID, PCCS_REDIRECT_URI, PCCS_SCOPE
+from .const import (
+    CONF_SCAN_INTERVAL_MINUTES,
+    DEFAULT_SCAN_INTERVAL_MINUTES,
+    DOMAIN,
+    MAX_SCAN_INTERVAL_MINUTES,
+    MIN_SCAN_INTERVAL_MINUTES,
+    PCCS_ACR_VALUES,
+    PCCS_CLIENT_ID,
+    PCCS_REDIRECT_URI,
+    PCCS_SCOPE,
+)
 from .coordinator import PolestarAPI
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,6 +62,12 @@ class PolestarSOCConfigFlow(ConfigFlow, domain=DOMAIN):
         self._web_tokens: dict = {}
         self._pccs_session_state: dict | None = None
         self._reauth_entry: str | None = None
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> PolestarSOCOptionsFlow:
+        """Create the options flow."""
+        return PolestarSOCOptionsFlow()
 
     # -- Step: user (email + password) ---------------------------------------
 
@@ -209,3 +237,35 @@ class PolestarSOCConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="reauth_successful")
 
         return self.async_create_entry(title=self._email, data=entry_data)
+
+
+class PolestarSOCOptionsFlow(OptionsFlowWithReload):
+    """Handle options for Polestar SOC."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Manage the polling interval."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        current = self.config_entry.options.get(
+            CONF_SCAN_INTERVAL_MINUTES, DEFAULT_SCAN_INTERVAL_MINUTES
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_SCAN_INTERVAL_MINUTES, default=current): vol.All(
+                        NumberSelector(
+                            NumberSelectorConfig(
+                                min=MIN_SCAN_INTERVAL_MINUTES,
+                                max=MAX_SCAN_INTERVAL_MINUTES,
+                                step=1,
+                                unit_of_measurement=UnitOfTime.MINUTES,
+                                mode=NumberSelectorMode.BOX,
+                            )
+                        ),
+                        vol.Coerce(int),
+                    ),
+                }
+            ),
+        )

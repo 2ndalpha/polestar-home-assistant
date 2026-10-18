@@ -36,6 +36,20 @@
       "reauth_successful": "Re-authentication successful."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Polling",
+        "description": "How often vehicle data is fetched from Polestar. Shorter intervals send more requests to Polestar's servers.",
+        "data": {
+          "scan_interval_minutes": "Polling interval"
+        },
+        "data_description": {
+          "scan_interval_minutes": "Minutes between updates, from 1 to 60."
+        }
+      }
+    }
+  },
   "entity": {
     "sensor": {
       "battery_soc": {

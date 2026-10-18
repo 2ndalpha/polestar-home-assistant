@@ -79,7 +79,9 @@ Custom Home Assistant integration for Polestar vehicles. Provides battery, charg
 
 The integration authenticates using Polestar ID OAuth2. A second authentication step (email OTP) is offered during setup to enable charge limit and charge timer controls. This step is optional — sensors work without it.
 
-Data is polled every 5 minutes.
+Data is polled every 5 minutes by default. To change this, open **Settings > Devices & Services > Polestar State of Charge > Configure** and set the polling interval (1–60 minutes). Shorter intervals give finer-grained history — for example for charging curves — at the cost of more requests to Polestar's servers.
+
+Requires Home Assistant 2025.8 or newer.
 
 ## Troubleshooting
 
@@ -92,7 +94,7 @@ reports the rolling state of each upstream API layer:
 | State | Meaning | What to do |
 |-------|---------|------------|
 | `ok` | All API layers responded successfully on the last poll. | Nothing. |
-| `degraded` | One layer failed on the last poll cycle. | Wait one cycle (5 min). Could be a transient blip. |
+| `degraded` | One layer failed on the last poll cycle. | Wait one poll cycle (5 min by default). Could be a transient blip. |
 | `down` | A layer has failed at least two consecutive cycles. | Check the entity's attributes for `last_*_code` and `*_failing_endpoints`. |
 
 The sensor's attributes break down per layer (`pccs`, `cep`, `graphql`):
