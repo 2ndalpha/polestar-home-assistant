@@ -43,6 +43,7 @@ def mock_entry() -> MagicMock:
         "pccs_access_token": "pccs_tok",
         "pccs_refresh_token": "pccs_refresh",
     }
+    entry.options = {}
     return entry
 
 

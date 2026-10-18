@@ -1,9 +1,12 @@
 """Constants for the Polestar State of Charge integration."""
 
-from datetime import timedelta
-
 DOMAIN = "polestar_soc"
-SCAN_INTERVAL = timedelta(minutes=5)
+
+# Options flow — polling interval
+CONF_SCAN_INTERVAL_MINUTES = "scan_interval_minutes"
+DEFAULT_SCAN_INTERVAL_MINUTES = 5
+MIN_SCAN_INTERVAL_MINUTES = 1
+MAX_SCAN_INTERVAL_MINUTES = 60
 
 # OAuth2 / OIDC constants
 OIDC_BASE_URL = "https://polestarid.eu.polestar.com"
