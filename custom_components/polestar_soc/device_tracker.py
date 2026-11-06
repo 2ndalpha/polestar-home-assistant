@@ -62,6 +62,13 @@ class PolestarDeviceTracker(CoordinatorEntity[PolestarCoordinator], TrackerEntit
             sw_version=str(year) if year else None,
         )
 
+    @property
+    def force_update(self) -> bool:
+        """Write the state only when the location, its timestamp or the zone changes."""
+        # TrackerEntity returns True for non-polling entities and ignores
+        # _attr_force_update; a forced write resets last_changed on every refresh.
+        return False
+
     def _location_data(self) -> dict | None:
         """Return location dict from coordinator data, or None."""
         data = self.coordinator.data

@@ -1,7 +1,14 @@
 """Shared fixtures for Polestar SOC tests."""
 
+from collections.abc import Iterator
+from unittest.mock import AsyncMock, patch
+
 import grpc
 import pytest
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.polestar_soc.const import DOMAIN
 
 # Activate the pytest-homeassistant-custom-component plugin
 pytest_plugins = "pytest_homeassistant_custom_component"
@@ -291,3 +298,36 @@ def sample_coordinator_data(
             },
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Integration set-up against a stubbed API
+# ---------------------------------------------------------------------------
+
+_ENTRY_DATA = {
+    "email": "user@example.com",
+    "password": "pw",
+    "access_token": "web_tok",
+    "refresh_token": "web_refresh",
+    "pccs_access_token": "pccs_tok",
+    "pccs_refresh_token": "pccs_refresh",
+}
+
+
+@pytest.fixture
+def fetch(sample_coordinator_data: dict) -> Iterator[AsyncMock]:
+    """Stand in for the API: every poll returns ``fetch.return_value``."""
+    with patch(
+        "custom_components.polestar_soc.coordinator.PolestarCoordinator._async_update_data",
+        AsyncMock(return_value=sample_coordinator_data),
+    ) as mock:
+        yield mock
+
+
+async def set_up_entry(hass: HomeAssistant, options: dict | None = None) -> MockConfigEntry:
+    """Add a config entry with stored tokens and set the integration up from it."""
+    entry = MockConfigEntry(domain=DOMAIN, data=_ENTRY_DATA, options=options or {})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry

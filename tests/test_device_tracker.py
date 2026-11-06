@@ -1,11 +1,19 @@
 """Tests for device_tracker platform — vehicle GPS location."""
 
-from unittest.mock import MagicMock
+import copy
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from homeassistant.components.device_tracker import SourceType
+from homeassistant.const import EVENT_STATE_CHANGED, STATE_HOME, STATE_NOT_HOME
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 
 from custom_components.polestar_soc.const import DOMAIN
 from custom_components.polestar_soc.device_tracker import PolestarDeviceTracker
+
+from .conftest import set_up_entry
 
 VIN = "YSMYKEAE1RB000001"
 
@@ -72,3 +80,85 @@ class TestPolestarDeviceTracker:
         assert tracker.latitude is None
         assert tracker.longitude is None
         assert tracker.extra_state_attributes is None
+
+
+@pytest.mark.usefixtures("enable_custom_integrations")
+class TestTrackerStateWrites:
+    @pytest.fixture
+    async def entry(self, hass: HomeAssistant, fetch: AsyncMock) -> MockConfigEntry:
+        return await set_up_entry(hass)
+
+    @pytest.fixture
+    def entity_id(self, hass: HomeAssistant, entry: MockConfigEntry) -> str:
+        entity_id = er.async_get(hass).async_get_entity_id(
+            "device_tracker", DOMAIN, f"{VIN}_location"
+        )
+        assert entity_id is not None
+        return entity_id
+
+    async def _refresh_with_location(
+        self, hass: HomeAssistant, entry: MockConfigEntry, fetch: AsyncMock, location: dict
+    ) -> None:
+        data = copy.deepcopy(fetch.return_value)
+        data["location"][VIN] = location
+        fetch.return_value = data
+        await hass.data[DOMAIN][entry.entry_id].async_refresh()
+        await hass.async_block_till_done()
+
+    async def test_refresh_with_unchanged_location_writes_no_state_change(
+        self, hass: HomeAssistant, entry: MockConfigEntry, entity_id: str, fetch: AsyncMock, freezer
+    ):
+        before = hass.states.get(entity_id)
+        events = async_capture_events(hass, EVENT_STATE_CHANGED)
+
+        freezer.tick(300)
+        await hass.data[DOMAIN][entry.entry_id].async_refresh()
+        await hass.async_block_till_done()
+
+        assert fetch.await_count == 2
+        assert [e for e in events if e.data["entity_id"] == entity_id] == []
+        after = hass.states.get(entity_id)
+        assert after.last_changed == before.last_changed
+        assert after.last_updated == before.last_updated
+
+    async def test_moving_within_the_same_zone_updates_attributes_and_keeps_last_changed(
+        self, hass: HomeAssistant, entry: MockConfigEntry, entity_id: str, fetch: AsyncMock, freezer
+    ):
+        before = hass.states.get(entity_id)
+        assert before.state == STATE_NOT_HOME
+
+        freezer.tick(300)
+        await self._refresh_with_location(
+            hass,
+            entry,
+            fetch,
+            {"latitude": 59.4, "longitude": 18.1, "timestamp_ms": 1772990358845},
+        )
+
+        after = hass.states.get(entity_id)
+        assert after.state == STATE_NOT_HOME
+        assert after.attributes["latitude"] == 59.4
+        assert after.attributes["location_timestamp"] == "2026-03-08T17:19:18.845000+00:00"
+        assert after.last_updated > before.last_updated
+        assert after.last_changed == before.last_changed
+
+    async def test_entering_the_home_zone_moves_last_changed(
+        self, hass: HomeAssistant, entry: MockConfigEntry, entity_id: str, fetch: AsyncMock, freezer
+    ):
+        before = hass.states.get(entity_id)
+
+        freezer.tick(300)
+        await self._refresh_with_location(
+            hass,
+            entry,
+            fetch,
+            {
+                "latitude": hass.config.latitude,
+                "longitude": hass.config.longitude,
+                "timestamp_ms": 1772990358845,
+            },
+        )
+
+        after = hass.states.get(entity_id)
+        assert after.state == STATE_HOME
+        assert after.last_changed > before.last_changed
