@@ -1,46 +1,17 @@
 """Tests for setting up the integration and the polling interval it runs at."""
 
-from collections.abc import Iterator
 from datetime import timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    async_fire_time_changed,
-)
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
-from custom_components.polestar_soc.const import CONF_SCAN_INTERVAL_MINUTES, DOMAIN
+from custom_components.polestar_soc.const import CONF_SCAN_INTERVAL_MINUTES
 
-_ENTRY_DATA = {
-    "email": "user@example.com",
-    "password": "pw",
-    "access_token": "web_tok",
-    "refresh_token": "web_refresh",
-    "pccs_access_token": "pccs_tok",
-    "pccs_refresh_token": "pccs_refresh",
-}
-
-
-@pytest.fixture
-def fetch(sample_coordinator_data: dict) -> Iterator[AsyncMock]:
-    """Stand in for the API: every poll returns the same sample data."""
-    with patch(
-        "custom_components.polestar_soc.coordinator.PolestarCoordinator._async_update_data",
-        AsyncMock(return_value=sample_coordinator_data),
-    ) as mock:
-        yield mock
-
-
-async def _set_up(hass: HomeAssistant, options: dict) -> MockConfigEntry:
-    entry = MockConfigEntry(domain=DOMAIN, data=_ENTRY_DATA, options=options)
-    entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-    return entry
+from .conftest import set_up_entry as _set_up
 
 
 async def _advance(hass: HomeAssistant, delta: timedelta) -> None:
